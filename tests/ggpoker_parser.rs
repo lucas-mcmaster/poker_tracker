@@ -12,9 +12,9 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
 use common::{
-    DEAD_MISSED_BLIND, EV_CASHOUT, FIXTURE_CURRENCY, ONE_CARD_SHOW_AFTER_FOLD,
-    RIT_THREE_TIMES_PREFLOP, RIT_TWICE_FLOP_ALL_IN, SAMPLE_SESSION, THREE_WAY_ALL_IN_SIDE_POT,
-    UNCALLED_ALL_IN_SPLIT, WALK, gg,
+    DEAD_MISSED_BLIND, EV_CASHOUT, FIXTURE_CURRENCY, HU_FLOP, HU_PREFLOP_FOLD, HU_SHOWDOWN,
+    ONE_CARD_SHOW_AFTER_FOLD, RIT_THREE_TIMES_PREFLOP, RIT_TWICE_FLOP_ALL_IN, SAMPLE_SESSION,
+    THREE_WAY_ALL_IN_SIDE_POT, UNCALLED_ALL_IN_SPLIT, WALK, gg,
 };
 use poker_tracker::domain::{
     ActionType, AdjustmentKind, CanonicalHand, Card, CurrencyCode, DeductionKind, Platform, Street,
@@ -281,6 +281,137 @@ fn uncalled_over_shove_and_split_pot() {
         ("99a2b579", dec!(5.18), dec!(4.82))
     );
     assert_eq!(h.outcome.winners.len(), 2);
+}
+
+#[test]
+fn heads_up_hands_parse_with_button_order_and_nets() {
+    // 1. HU_PREFLOP_FOLD (HD145412494): Hero is button on seat 3, posts SB.
+    let h1 = parse(HU_PREFLOP_FOLD);
+    assert_eq!(h1.header.button_seat, 3);
+    assert_eq!(h1.players.len(), 2);
+    let preflop_vol1: Vec<_> = h1
+        .actions
+        .iter()
+        .filter(|a| {
+            a.street == Street::Preflop
+                && !matches!(
+                    a.action_type,
+                    ActionType::PostSmallBlind
+                        | ActionType::PostBigBlind
+                        | ActionType::PostDeadBlind
+                )
+        })
+        .collect();
+    assert_eq!(preflop_vol1[0].player_name, "Hero");
+    assert_eq!(preflop_vol1[0].action_type, ActionType::Fold);
+    assert_eq!(net_of(&h1, "Hero"), dec!(-0.05));
+    assert_eq!(net_of(&h1, "445e6868"), dec!(0.05));
+
+    // 2. HU_SHOWDOWN (HD145412514): 445e6868 is button on seat 6, posts SB.
+    let h2 = parse(HU_SHOWDOWN);
+    assert_eq!(h2.header.button_seat, 6);
+    assert_eq!(h2.players.len(), 2);
+    let preflop_vol2: Vec<_> = h2
+        .actions
+        .iter()
+        .filter(|a| {
+            a.street == Street::Preflop
+                && !matches!(
+                    a.action_type,
+                    ActionType::PostSmallBlind
+                        | ActionType::PostBigBlind
+                        | ActionType::PostDeadBlind
+                )
+        })
+        .collect();
+    assert_eq!(preflop_vol2[0].player_name, "445e6868");
+    assert_eq!(preflop_vol2[0].action_type, ActionType::Call);
+    assert_eq!(preflop_vol2[1].player_name, "Hero");
+    assert_eq!(preflop_vol2[1].action_type, ActionType::Check);
+    // BB acts first postflop
+    for street in [Street::Flop, Street::Turn, Street::River] {
+        let street_actions: Vec<_> = h2.actions.iter().filter(|a| a.street == street).collect();
+        assert_eq!(street_actions[0].player_name, "Hero");
+    }
+    assert_eq!(net_of(&h2, "Hero"), dec!(-0.20));
+    assert_eq!(net_of(&h2, "445e6868"), dec!(0.18));
+
+    // 3. HU_FLOP (HD140650285): 9f78ead0 is button on seat 1, posts SB.
+    let h3 = parse(HU_FLOP);
+    assert_eq!(h3.header.button_seat, 1);
+    assert_eq!(h3.players.len(), 2);
+    let preflop_vol3: Vec<_> = h3
+        .actions
+        .iter()
+        .filter(|a| {
+            a.street == Street::Preflop
+                && !matches!(
+                    a.action_type,
+                    ActionType::PostSmallBlind
+                        | ActionType::PostBigBlind
+                        | ActionType::PostDeadBlind
+                )
+        })
+        .collect();
+    assert_eq!(preflop_vol3[0].player_name, "9f78ead0");
+    assert_eq!(preflop_vol3[0].action_type, ActionType::Call);
+    assert_eq!(preflop_vol3[1].player_name, "Hero");
+    assert_eq!(preflop_vol3[1].action_type, ActionType::Check);
+    // BB acts first on flop
+    let flop_actions: Vec<_> = h3
+        .actions
+        .iter()
+        .filter(|a| a.street == Street::Flop)
+        .collect();
+    assert_eq!(flop_actions[0].player_name, "Hero");
+    assert_eq!(net_of(&h3, "Hero"), dec!(0.18));
+    assert_eq!(net_of(&h3, "9f78ead0"), dec!(-0.20));
+}
+
+#[test]
+fn heads_up_summary_label_refusals_and_ring_regression() {
+    // M6.4: Add (button) to seat 6's summary line
+    let with_button = HU_SHOWDOWN.replace(
+        "Seat 6: 445e6868 (small blind)",
+        "Seat 6: 445e6868 (button) (small blind)",
+    );
+    assert!(matches!(
+        parse_err(&with_button),
+        ParseError::SummaryMismatch { .. }
+    ));
+    let with_button_after = HU_SHOWDOWN.replace(
+        "Seat 6: 445e6868 (small blind)",
+        "Seat 6: 445e6868 (small blind) (button)",
+    );
+    assert!(matches!(
+        parse_err(&with_button_after),
+        ParseError::SummaryMismatch { .. }
+    ));
+
+    // M6.4: Swap (small blind) and (big blind)
+    let swapped_blinds = HU_SHOWDOWN
+        .replace("Hero (big blind)", "Hero (small blind)")
+        .replace("445e6868 (small blind)", "445e6868 (big blind)");
+    assert!(matches!(
+        parse_err(&swapped_blinds),
+        ParseError::SummaryMismatch { .. }
+    ));
+
+    // M6.4: Change the table line to Seat #3 is the button
+    let wrong_button = HU_SHOWDOWN.replace("Seat #6 is the button", "Seat #3 is the button");
+    assert!(matches!(
+        parse_err(&wrong_button),
+        ParseError::SummaryMismatch { .. }
+    ));
+
+    // M6.5 Ring regression: a ring-game hand whose button line has (button) removed is still refused
+    let ring_hand = first_hand(SAMPLE_SESSION);
+    assert!(ring_hand.contains("Seat 4: Hero (button)"));
+    let missing_btn = ring_hand.replace("Seat 4: Hero (button)", "Seat 4: Hero");
+    assert!(matches!(
+        parse_err(&missing_btn),
+        ParseError::SummaryMismatch { .. }
+    ));
 }
 
 #[test]

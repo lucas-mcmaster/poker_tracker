@@ -1003,7 +1003,9 @@ impl HandState {
             let posted_small = own
                 .iter()
                 .any(|a| a.action_type == ActionType::PostSmallBlind);
-            if seat_line.button != (p.seat == header.button_seat)
+            let heads_up = self.players.len() == 2;
+            let expect_button = p.seat == header.button_seat && !(heads_up && posted_small);
+            if seat_line.button != expect_button
                 || seat_line.small_blind != posted_small
                 || seat_line.big_blind != (first_big_blind == Some(p.name.as_str()))
             {

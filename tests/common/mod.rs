@@ -474,3 +474,79 @@ Seat 2: Hero (button) folded before Flop (didn't bet)
 Seat 3: 99a2b579 (small blind) folded before Flop
 Seat 4: 10a37d12 (big blind) collected ($0.1)
 Seat 5: 888ffeb2 folded before Flop (didn't bet)"#;
+
+/// Heads-up preflop fold. (HD145412494)
+pub const HU_PREFLOP_FOLD: &str = r#"Poker Hand #HD145412494: Hold'em No Limit ($0.05/$0.1) - 2026/09/25 02:35:58
+Table 'NLHRed3' 6-max Seat #3 is the button
+Seat 3: Hero ($13.57 in chips)
+Seat 6: 445e6868 ($11.96 in chips)
+Hero: posts small blind $0.05
+445e6868: posts big blind $0.1
+*** HOLE CARDS ***
+Dealt to Hero [2d 7s]
+Dealt to 445e6868 
+Hero: folds
+Uncalled bet ($0.05) returned to 445e6868
+*** SHOWDOWN ***
+445e6868 collected $0.1 from pot
+*** SUMMARY ***
+Total pot $0.1 | Rake $0 | Jackpot $0 | Bingo $0 | Fortune $0 | Tax $0
+Seat 3: Hero (small blind) folded before Flop
+Seat 6: 445e6868 (big blind) collected ($0.1)"#;
+
+/// Heads-up single-board showdown. (HD145412514)
+pub const HU_SHOWDOWN: &str = r#"Poker Hand #HD145412514: Hold'em No Limit ($0.05/$0.1) - 2026/09/25 02:36:41
+Table 'NLHRed3' 6-max Seat #6 is the button
+Seat 3: Hero ($13.8 in chips)
+Seat 6: 445e6868 ($11.71 in chips)
+445e6868: posts small blind $0.05
+Hero: posts big blind $0.1
+*** HOLE CARDS ***
+Dealt to Hero [2d Jh]
+Dealt to 445e6868 
+445e6868: calls $0.05
+Hero: checks
+*** FLOP *** [2s 9d As]
+Hero: checks
+445e6868: checks
+*** TURN *** [2s 9d As] [4h]
+Hero: bets $0.1
+445e6868: calls $0.1
+*** RIVER *** [2s 9d As 4h] [5c]
+Hero: checks
+445e6868: checks
+445e6868: shows [4c Tc] (a pair of Fours)
+Hero: shows [2d Jh] (a pair of Twos)
+*** SHOWDOWN ***
+445e6868 collected $0.38 from pot
+*** SUMMARY ***
+Total pot $0.4 | Rake $0.02 | Jackpot $0 | Bingo $0 | Fortune $0 | Tax $0
+Board [2s 9d As 4h 5c]
+Seat 3: Hero (big blind) showed [2d Jh] and lost with a pair of Twos
+Seat 6: 445e6868 (small blind) showed [4c Tc] and won ($0.38) with a pair of Fours"#;
+
+/// Heads-up flop action ending in fold. (HD140650285)
+pub const HU_FLOP: &str = r#"Poker Hand #HD140650285: Hold'em No Limit ($0.05/$0.1) - 2026/08/21 16:55:45
+Table 'NLHRed14' 6-max Seat #1 is the button
+Seat 1: 9f78ead0 ($2 in chips)
+Seat 4: Hero ($10.52 in chips)
+9f78ead0: posts small blind $0.05
+Hero: posts big blind $0.1
+*** HOLE CARDS ***
+Dealt to 9f78ead0 
+Dealt to Hero [8c Th]
+9f78ead0: calls $0.05
+Hero: checks
+*** FLOP *** [2d 8d 9s]
+Hero: checks
+9f78ead0: bets $0.1
+Hero: raises $0.3 to $0.4
+9f78ead0: folds
+Uncalled bet ($0.3) returned to Hero
+*** SHOWDOWN ***
+Hero collected $0.38 from pot
+*** SUMMARY ***
+Total pot $0.4 | Rake $0.02 | Jackpot $0 | Bingo $0 | Fortune $0 | Tax $0
+Board [2d 8d 9s]
+Seat 1: 9f78ead0 (small blind) folded on the Flop
+Seat 4: Hero (big blind) won ($0.38)"#;

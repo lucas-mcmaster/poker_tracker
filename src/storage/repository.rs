@@ -839,10 +839,24 @@ impl SqliteRepository {
 
     fn initialize(mut conn: Connection) -> Result<Self, StorageError> {
         conn.busy_timeout(DEFAULT_BUSY_TIMEOUT)?;
+        let start = std::time::Instant::now();
         // Identify the file before changing anything about it.
-        let current = match identify(&conn)? {
-            DatabaseKind::New => 0,
-            DatabaseKind::PokerTracker(version) => version,
+        let current = loop {
+            match identify(&conn) {
+                Ok(DatabaseKind::New) => break 0,
+                Ok(DatabaseKind::PokerTracker(version)) => break version,
+                Err(StorageError::Sqlite(rusqlite::Error::SqliteFailure(err, _)))
+                    if err.extended_code == 5 && start.elapsed() < DEFAULT_BUSY_TIMEOUT =>
+                {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(StorageError::NotAPokerTrackerDatabase { .. })
+                    if start.elapsed() < DEFAULT_BUSY_TIMEOUT =>
+                {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(e) => return Err(e),
+            }
         };
         if !(0..=SCHEMA_VERSION).contains(&current) {
             return Err(StorageError::UnsupportedSchemaVersion {
@@ -850,7 +864,17 @@ impl SqliteRepository {
                 expected: SCHEMA_VERSION,
             });
         }
-        conn.execute_batch(PRAGMA_TUNING)?;
+        loop {
+            match conn.execute_batch(PRAGMA_TUNING) {
+                Ok(()) => break,
+                Err(rusqlite::Error::SqliteFailure(err, _))
+                    if err.extended_code == 5 && start.elapsed() < DEFAULT_BUSY_TIMEOUT =>
+                {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(e) => return Err(StorageError::Sqlite(e)),
+            }
+        }
         // Apply pending migrations in order, each atomically with its version bump. The version
         // is re-read under the write lock, so a concurrent open never applies a step twice.
         loop {
