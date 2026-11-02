@@ -12,12 +12,12 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
 use common::{
-    BODY_AND_SUMMARY_ONE_CARD, DEAD_MISSED_BLIND, DOUBLE_STRADDLE, EV_CASHOUT, FIXTURE_CURRENCY,
-    HERO_SUMMARY_SHOW_ONE_CARD, HU_FLOP, HU_PREFLOP_FOLD, HU_SHOWDOWN, ONE_CARD_SHOW_AFTER_FOLD,
-    RIT_THREE_TIMES_PREFLOP, RIT_TWICE_FLOP_ALL_IN, SAMPLE_SESSION, STRADDLE_BB_WALK,
-    STRADDLE_BUTTON, STRADDLE_SB_ALL_IN_POT, STRADDLE_UTG_OPTION, SUMMARY_SHOW_COLLECTED,
-    SUMMARY_SHOW_ONE_CARD, SUMMARY_SHOW_TWO_CARDS, THREE_WAY_ALL_IN_SIDE_POT,
-    UNCALLED_ALL_IN_SPLIT, WALK, gg,
+    BODY_AND_SUMMARY_ONE_CARD, DEAD_MISSED_BLIND, DOUBLE_STRADDLE, EV_CASHOUT, EV_CASHOUT_CALLER,
+    EV_CASHOUT_FLOP, EV_CASHOUT_RECEIVED, FIXTURE_CURRENCY, HERO_SUMMARY_SHOW_ONE_CARD, HU_FLOP,
+    HU_PREFLOP_FOLD, HU_SHOWDOWN, ONE_CARD_SHOW_AFTER_FOLD, RIT_THREE_TIMES_PREFLOP,
+    RIT_TWICE_FLOP_ALL_IN, SAMPLE_SESSION, STRADDLE_BB_WALK, STRADDLE_BUTTON,
+    STRADDLE_SB_ALL_IN_POT, STRADDLE_UTG_OPTION, SUMMARY_SHOW_COLLECTED, SUMMARY_SHOW_ONE_CARD,
+    SUMMARY_SHOW_TWO_CARDS, THREE_WAY_ALL_IN_SIDE_POT, UNCALLED_ALL_IN_SPLIT, WALK, gg,
 };
 use poker_tracker::domain::{
     ActionType, AdjustmentKind, CanonicalHand, Card, CurrencyCode, DeductionKind, Platform, Player,
@@ -247,6 +247,71 @@ fn ev_cashout_becomes_a_debit_adjustment() {
     assert_eq!(r.net, dec!(0.83));
     // Pot accounting itself is unaffected by the adjustment.
     assert_eq!(h.outcome.total_pot, dec!(3.05));
+}
+
+#[test]
+fn ev_cashout_received_becomes_a_credit_adjustment() {
+    let h = parse(EV_CASHOUT_RECEIVED);
+    assert_eq!(h.outcome.adjustments.len(), 1);
+    let a = &h.outcome.adjustments[0];
+    assert_eq!(
+        (a.player_name.as_str(), a.kind, a.street, a.amount),
+        (
+            "81ae8569",
+            AdjustmentKind::EvCashoutReceived,
+            Street::Flop,
+            dec!(6.87)
+        )
+    );
+    assert_eq!(net_of(&h, "a2939c73"), dec!(4.93));
+    assert_eq!(net_of(&h, "81ae8569"), dec!(1.87));
+    assert_eq!(net_of(&h, "f729835e"), dec!(-0.40));
+    assert_eq!(net_of(&h, "ab03e00b"), dec!(-0.05));
+    assert_eq!(net_of(&h, "27a6d6a"), dec!(-0.10));
+    assert_eq!(net_of(&h, "Hero"), dec!(0.00));
+}
+
+#[test]
+fn ev_cashout_flop_and_caller_hands_parse() {
+    let h_flop = parse(EV_CASHOUT_FLOP);
+    assert_eq!(h_flop.outcome.adjustments.len(), 1);
+    let a_flop = &h_flop.outcome.adjustments[0];
+    assert_eq!(
+        (
+            a_flop.player_name.as_str(),
+            a_flop.kind,
+            a_flop.street,
+            a_flop.amount
+        ),
+        (
+            "62688fe9",
+            AdjustmentKind::EvCashoutRiskPaid,
+            Street::Flop,
+            dec!(-0.55)
+        )
+    );
+    assert_eq!(net_of(&h_flop, "62688fe9"), dec!(1.27));
+    assert_eq!(net_of(&h_flop, "dc7d0eb4"), dec!(-1.96));
+
+    let h_caller = parse(EV_CASHOUT_CALLER);
+    assert_eq!(h_caller.outcome.adjustments.len(), 1);
+    let a_caller = &h_caller.outcome.adjustments[0];
+    assert_eq!(
+        (
+            a_caller.player_name.as_str(),
+            a_caller.kind,
+            a_caller.street,
+            a_caller.amount
+        ),
+        (
+            "c7bdd1e4",
+            AdjustmentKind::EvCashoutRiskPaid,
+            Street::Turn,
+            dec!(-0.66)
+        )
+    );
+    assert_eq!(net_of(&h_caller, "c7bdd1e4"), dec!(1.53));
+    assert_eq!(net_of(&h_caller, "28501331"), dec!(-2.27));
 }
 
 #[test]
@@ -1031,6 +1096,12 @@ fn rejects_unknown_or_unsettled_cashout_formats() {
     let unknown = EV_CASHOUT.replace("Pays Cashout Risk ($0.48)\n", "Receives Cashout ($1.20)\n");
     assert!(matches!(
         parse_err(&unknown),
+        ParseError::SummaryMismatch { .. }
+    ));
+    let unknown_wording =
+        EV_CASHOUT.replace("Pays Cashout Risk ($0.48)\n", "Takes Cashout ($1.20)\n");
+    assert!(matches!(
+        parse_err(&unknown_wording),
         ParseError::UnsupportedAdjustment { .. }
     ));
     let unsettled = EV_CASHOUT
@@ -1038,6 +1109,65 @@ fn rejects_unknown_or_unsettled_cashout_formats() {
         .replace(", Cashout Risk ($0.48)", "");
     assert!(matches!(
         parse_err(&unsettled),
+        ParseError::UnsupportedAdjustment { .. }
+    ));
+}
+
+#[test]
+fn ev_cashout_received_refusals() {
+    // Amount differs between body and summary
+    let bad_amt =
+        EV_CASHOUT_RECEIVED.replace("Receives Cashout ($6.87)", "Receives Cashout ($5.00)");
+    assert!(matches!(
+        parse_err(&bad_amt),
+        ParseError::SummaryMismatch { .. }
+    ));
+
+    // Summary suffix changed to Cashout Risk ($6.87)
+    let wrong_suffix =
+        EV_CASHOUT_RECEIVED.replace(", EV Cashout ($6.87)", ", Cashout Risk ($6.87)");
+    assert!(matches!(
+        parse_err(&wrong_suffix),
+        ParseError::SummaryMismatch { .. }
+    ));
+
+    // Receives Cashout line deleted
+    let deleted_settlement =
+        EV_CASHOUT_RECEIVED.replace("81ae8569: Receives Cashout ($6.87)\n", "");
+    assert!(matches!(
+        parse_err(&deleted_settlement),
+        ParseError::UnsupportedAdjustment { .. }
+    ));
+
+    // The line moved before the turn (e.g. into flop)
+    let line_before_turn = EV_CASHOUT_RECEIVED
+        .replace("81ae8569: Receives Cashout ($6.87)\n", "")
+        .replace(
+            "81ae8569: Chooses to EV Cashout\n",
+            "81ae8569: Chooses to EV Cashout\n81ae8569: Receives Cashout ($6.87)\n",
+        );
+    assert!(matches!(
+        parse_err(&line_before_turn),
+        ParseError::UnsupportedAdjustment { .. }
+    ));
+
+    // The loser's outcome changed to won ($6.87)
+    let loser_won = EV_CASHOUT_RECEIVED.replace(
+        "lost with two pair, Tens and Eights, EV Cashout ($6.87)",
+        "won ($6.87) with two pair, Tens and Eights, EV Cashout ($6.87)",
+    );
+    assert!(matches!(
+        parse_err(&loser_won),
+        ParseError::SummaryMismatch { .. }
+    ));
+
+    // Cashout in split pot -> UnsupportedAdjustment
+    let split_pot = EV_CASHOUT_RECEIVED.replace(
+        "a2939c73 collected $9.93 from pot\n",
+        "a2939c73 collected $4.96 from pot\n27a6d6a collected $4.97 from pot\n",
+    );
+    assert!(matches!(
+        parse_err(&split_pot),
         ParseError::UnsupportedAdjustment { .. }
     ));
 }

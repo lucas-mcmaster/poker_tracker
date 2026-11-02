@@ -6,7 +6,7 @@ use rust_decimal::Decimal;
 use thiserror::Error;
 
 use crate::domain::canonical::{
-    ActionType, CanonicalHand, MAX_RUNOUTS, Platform, Player, PlayerResult, Street,
+    ActionType, AdjustmentKind, CanonicalHand, MAX_RUNOUTS, Platform, Player, PlayerResult, Street,
 };
 use crate::domain::card::Card;
 use crate::domain::money::decimal_to_micro_units;
@@ -515,11 +515,18 @@ fn validate_outcome(
     }
 
     // Off-pot adjustments.
+    let mut adjusted_players: HashSet<&str> = HashSet::new();
     for a in &o.adjustments {
         if !by_name.contains_key(a.player_name.as_str()) {
             return Err(ParseError::UnknownPlayer {
                 player_name: a.player_name.clone(),
             });
+        }
+        if !adjusted_players.insert(a.player_name.as_str()) {
+            return Err(violation(
+                hand,
+                format!("multiple adjustments for player '{}'", a.player_name),
+            ));
         }
         validate_lossless(a.amount)?;
         let sign_ok = match a.kind.is_credit() {
@@ -540,6 +547,39 @@ fn validate_outcome(
         }
         if a.street == Street::Showdown {
             return Err(violation(hand, "adjustment triggered at showdown"));
+        }
+        let won = o
+            .winners
+            .iter()
+            .filter(|w| w.player_name == a.player_name)
+            .try_fold(Decimal::ZERO, |acc, w| acc.checked_add(w.amount))
+            .ok_or_else(|| violation(hand, "winner amount overflow"))?;
+        match a.kind {
+            AdjustmentKind::EvCashoutReceived => {
+                if folded.contains(a.player_name.as_str()) {
+                    return Err(violation(
+                        hand,
+                        format!("folded player '{}' received EV cashout", a.player_name),
+                    ));
+                }
+                if won != Decimal::ZERO {
+                    return Err(violation(
+                        hand,
+                        format!("winning player '{}' received EV cashout", a.player_name),
+                    ));
+                }
+            }
+            AdjustmentKind::EvCashoutRiskPaid => {
+                if won <= Decimal::ZERO {
+                    return Err(violation(
+                        hand,
+                        format!(
+                            "non-winning player '{}' paid EV cashout risk",
+                            a.player_name
+                        ),
+                    ));
+                }
+            }
         }
     }
 
@@ -1394,28 +1434,79 @@ mod tests {
 
     #[test]
     fn validates_adjustment_players_and_signs() {
-        let adjustment = |name: &str, amount: Decimal| PlayerAdjustment {
+        let adjustment = |name: &str, kind: AdjustmentKind, amount: Decimal| PlayerAdjustment {
             player_name: name.into(),
-            kind: AdjustmentKind::EvCashoutRiskPaid,
+            kind,
             street: Street::Flop,
             amount,
         };
         let mut h = valid_hand();
-        h.outcome.adjustments.push(adjustment("A", dec!(-0.05)));
+        h.outcome.adjustments.push(adjustment(
+            "A",
+            AdjustmentKind::EvCashoutRiskPaid,
+            dec!(-0.05),
+        ));
         validate_hand(&h).unwrap();
         assert_eq!(h.checked_player_results().unwrap()[0].net, dec!(0.04));
 
         let mut h = valid_hand();
-        h.outcome.adjustments.push(adjustment("A", dec!(0.05)));
+        h.outcome.adjustments.push(adjustment(
+            "A",
+            AdjustmentKind::EvCashoutRiskPaid,
+            dec!(0.05),
+        ));
         assert_violation(&h);
         let mut h = valid_hand();
-        h.outcome
-            .adjustments
-            .push(adjustment("Nobody", dec!(-0.05)));
+        h.outcome.adjustments.push(adjustment(
+            "Nobody",
+            AdjustmentKind::EvCashoutRiskPaid,
+            dec!(-0.05),
+        ));
         assert!(matches!(
             validate_hand(&h),
             Err(ParseError::UnknownPlayer { .. })
         ));
+
+        // Multiple adjustments for one player
+        let mut h = valid_hand();
+        h.outcome.adjustments.push(adjustment(
+            "A",
+            AdjustmentKind::EvCashoutRiskPaid,
+            dec!(-0.05),
+        ));
+        h.outcome.adjustments.push(adjustment(
+            "A",
+            AdjustmentKind::EvCashoutRiskPaid,
+            dec!(-0.02),
+        ));
+        assert_violation(&h);
+
+        // EvCashoutReceived for winning player
+        let mut h = valid_hand();
+        h.outcome.adjustments.push(adjustment(
+            "A",
+            AdjustmentKind::EvCashoutReceived,
+            dec!(0.05),
+        ));
+        assert_violation(&h);
+
+        // EvCashoutRiskPaid for non-winning player
+        let mut h = valid_hand();
+        h.outcome.adjustments.push(adjustment(
+            "Hero",
+            AdjustmentKind::EvCashoutRiskPaid,
+            dec!(-0.05),
+        ));
+        assert_violation(&h);
+
+        // EvCashoutReceived for folded player
+        let mut h = valid_hand();
+        h.outcome.adjustments.push(adjustment(
+            "Hero",
+            AdjustmentKind::EvCashoutReceived,
+            dec!(0.05),
+        ));
+        assert_violation(&h);
     }
 
     #[test]

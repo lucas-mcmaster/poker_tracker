@@ -10,7 +10,8 @@ use rust_decimal_macros::dec;
 use tempfile::NamedTempFile;
 
 use common::{
-    EV_CASHOUT, ONE_CARD_SHOW_AFTER_FOLD, REAL_SESSION, RIT_THREE_TIMES_PREFLOP, WALK, gg,
+    EV_CASHOUT, EV_CASHOUT_RECEIVED, ONE_CARD_SHOW_AFTER_FOLD, REAL_SESSION,
+    RIT_THREE_TIMES_PREFLOP, WALK, gg,
 };
 use poker_tracker::domain::{CanonicalHand, CurrencyCode, Platform};
 use poker_tracker::parser::{GgPokerParser, HandParser};
@@ -646,4 +647,23 @@ fn a_locked_database_fails_the_batch_instead_of_rejecting_its_hands() {
         .insert_hands_batch(&[parse(WALK), parse(EV_CASHOUT)])
         .unwrap();
     assert_eq!(stats.hands_inserted, 2);
+}
+
+#[test]
+fn ev_cashout_received_round_trips_through_sqlite() {
+    let mut repo = SqliteRepository::open_in_memory().unwrap();
+    let hand = parse(EV_CASHOUT_RECEIVED);
+    assert_eq!(
+        repo.insert_hands_batch(std::slice::from_ref(&hand))
+            .unwrap()
+            .hands_inserted,
+        1
+    );
+    let adj: Vec<(String, i64)> = rows(&repo, "SELECT kind, amount_micros FROM player_adjustments");
+    assert_eq!(adj, vec![("EvCashoutReceived".to_string(), 6_870_000)]);
+    let loaded = repo
+        .load_hand(Platform::GGPoker, &hand.header.site_hand_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded, hand);
 }

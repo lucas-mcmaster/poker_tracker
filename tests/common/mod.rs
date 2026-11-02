@@ -968,3 +968,138 @@ Seat 3: 5daacec9 (big blind) folded before Flop
 Seat 4: adbf678c folded before Flop
 Seat 5: Hero collected ($1.57)
 Seat 6: 4e268376 folded before Flop (didn't bet)"#;
+
+/// EV Cashout chosen on the flop; player loses showdown and receives cashout. (HD145319803)
+pub const EV_CASHOUT_RECEIVED: &str = r#"Poker Hand #HD145319803: Hold'em No Limit ($0.05/$0.1) - 2026/09/24 18:12:47
+Table 'NLHRed18' 6-max Seat #4 is the button
+Seat 1: a2939c73 ($5 in chips)
+Seat 2: f729835e ($10.37 in chips)
+Seat 3: Hero ($10.11 in chips)
+Seat 4: 81ae8569 ($30.71 in chips)
+Seat 5: ab03e00b ($10 in chips)
+Seat 6: 27a6d6a ($12.06 in chips)
+ab03e00b: posts small blind $0.05
+27a6d6a: posts big blind $0.1
+*** HOLE CARDS ***
+Dealt to a2939c73 
+Dealt to f729835e 
+Dealt to Hero [7s 9s]
+Dealt to 81ae8569 
+Dealt to ab03e00b 
+Dealt to 27a6d6a 
+a2939c73: raises $0.3 to $0.4
+f729835e: calls $0.4
+Hero: folds
+81ae8569: calls $0.4
+ab03e00b: folds
+27a6d6a: folds
+*** FLOP *** [8d 7d 8h]
+a2939c73: bets $4.6 and is all-in
+f729835e: folds
+81ae8569: calls $4.6
+a2939c73: shows [2d 3d] (a pair of Eights)
+81ae8569: shows [Ts Tc] (two pair, Tens and Eights)
+81ae8569: Chooses to EV Cashout
+*** TURN *** [8d 7d 8h] [Kd]
+*** RIVER *** [8d 7d 8h Kd] [2h]
+81ae8569: Receives Cashout ($6.87)
+*** SHOWDOWN ***
+a2939c73 collected $9.93 from pot
+*** SUMMARY ***
+Total pot $10.55 | Rake $0.52 | Jackpot $0.1 | Bingo $0 | Fortune $0 | Tax $0
+Board [8d 7d 8h Kd 2h]
+Seat 1: a2939c73 showed [2d 3d] and won ($9.93) with a flush King high
+Seat 2: f729835e folded on the Flop
+Seat 3: Hero folded before Flop (didn't bet)
+Seat 4: 81ae8569 (button) showed [Ts Tc] and lost with two pair, Tens and Eights, EV Cashout ($6.87)
+Seat 5: ab03e00b (small blind) folded before Flop
+Seat 6: 27a6d6a (big blind) folded before Flop"#;
+
+/// EV Cashout chosen on the flop after preflop all-in; cashout risk paid after winning. (HD140647649)
+pub const EV_CASHOUT_FLOP: &str = r#"Poker Hand #HD140647649: Hold'em No Limit ($0.05/$0.1) - 2026/08/21 19:37:47
+Table 'NLHRed7' 6-max Seat #2 is the button
+Seat 1: 62688fe9 ($1.96 in chips)
+Seat 2: dc7d0eb4 ($10.59 in chips)
+Seat 3: 1fba9f17 ($12.78 in chips)
+Seat 4: Hero ($10.85 in chips)
+Seat 5: aa56bdcc ($8.75 in chips)
+Seat 6: f0d370b7 ($10.75 in chips)
+1fba9f17: posts small blind $0.05
+Hero: posts big blind $0.1
+*** HOLE CARDS ***
+Dealt to 62688fe9 
+Dealt to dc7d0eb4 
+Dealt to 1fba9f17 
+Dealt to Hero [Th 8d]
+Dealt to aa56bdcc 
+Dealt to f0d370b7 
+aa56bdcc: folds
+f0d370b7: folds
+62688fe9: raises $1.86 to $1.96 and is all-in
+dc7d0eb4: calls $1.96
+1fba9f17: folds
+Hero: folds
+62688fe9: shows [Ad Kd]
+dc7d0eb4: shows [Qh Kh]
+*** FLOP *** [Kc Jd 4s]
+62688fe9: Chooses to EV Cashout
+*** TURN *** [Kc Jd 4s] [3c]
+*** RIVER *** [Kc Jd 4s 3c] [Td]
+62688fe9: Pays Cashout Risk ($0.55)
+*** SHOWDOWN ***
+62688fe9 collected $3.78 from pot
+*** SUMMARY ***
+Total pot $4.07 | Rake $0.19 | Jackpot $0.1 | Bingo $0 | Fortune $0 | Tax $0
+Board [Kc Jd 4s 3c Td]
+Seat 1: 62688fe9 showed [Ad Kd] and won ($3.78) with a pair of Kings, Cashout Risk ($0.55)
+Seat 2: dc7d0eb4 (button) showed [Qh Kh] and lost with a pair of Kings
+Seat 3: 1fba9f17 (small blind) folded before Flop
+Seat 4: Hero (big blind) folded before Flop
+Seat 5: aa56bdcc folded before Flop (didn't bet)
+Seat 6: f0d370b7 folded before Flop (didn't bet)"#;
+
+/// EV Cashout chosen on the turn by caller; cashout risk paid after winning. (HD140653161)
+pub const EV_CASHOUT_CALLER: &str = r#"Poker Hand #HD140653161: Hold'em No Limit ($0.05/$0.1) - 2026/08/21 18:15:05
+Table 'NLHRed4' 6-max Seat #1 is the button
+Seat 1: 28501331 ($2.27 in chips)
+Seat 2: f82517 ($20.59 in chips)
+Seat 3: de4e416a ($8.13 in chips)
+Seat 4: c7bdd1e4 ($14.7 in chips)
+Seat 6: Hero ($13.74 in chips)
+f82517: posts small blind $0.05
+de4e416a: posts big blind $0.1
+*** HOLE CARDS ***
+Dealt to 28501331 
+Dealt to f82517 
+Dealt to de4e416a 
+Dealt to c7bdd1e4 
+Dealt to Hero [3h 6c]
+c7bdd1e4: raises $0.1 to $0.2
+Hero: folds
+28501331: calls $0.2
+f82517: folds
+de4e416a: calls $0.1
+*** FLOP *** [7s 2c Jd]
+de4e416a: checks
+c7bdd1e4: bets $0.65
+28501331: calls $0.65
+de4e416a: folds
+*** TURN *** [7s 2c Jd] [Qs]
+c7bdd1e4: bets $1.37
+28501331: raises $0.05 to $1.42 and is all-in
+c7bdd1e4: calls $0.05
+28501331: shows [Kc 9c] (King high)
+c7bdd1e4: shows [Th Jh] (a pair of Jacks)
+c7bdd1e4: Chooses to EV Cashout
+*** RIVER *** [7s 2c Jd Qs] [4s]
+c7bdd1e4: Pays Cashout Risk ($0.66)
+*** SHOWDOWN ***
+c7bdd1e4 collected $4.46 from pot
+*** SUMMARY ***
+Total pot $4.79 | Rake $0.23 | Jackpot $0.1 | Bingo $0 | Fortune $0 | Tax $0
+Board [7s 2c Jd Qs 4s]
+Seat 1: 28501331 (button) showed [Kc 9c] and lost with King high
+Seat 2: f82517 (small blind) folded before Flop
+Seat 3: de4e416a (big blind) folded on the Flop
+Seat 4: c7bdd1e4 showed [Th Jh] and won ($4.46) with a pair of Jacks, Cashout Risk ($0.66)
+Seat 6: Hero folded before Flop (didn't bet)"#;

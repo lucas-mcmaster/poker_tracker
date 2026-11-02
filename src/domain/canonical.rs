@@ -386,6 +386,9 @@ pub enum AdjustmentKind {
     /// EV Cashout taken, pot won afterwards: the player pays back the cashout risk
     /// (GGPoker `Pays Cashout Risk ($x)`). Always a debit.
     EvCashoutRiskPaid,
+    /// EV Cashout taken, pot lost afterwards: the player is paid the cashout
+    /// (GGPoker `Receives Cashout ($x)`). Always a credit.
+    EvCashoutReceived,
 }
 
 impl AdjustmentKind {
@@ -394,6 +397,7 @@ impl AdjustmentKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::EvCashoutRiskPaid => "EvCashoutRiskPaid",
+            Self::EvCashoutReceived => "EvCashoutReceived",
         }
     }
 
@@ -403,11 +407,16 @@ impl AdjustmentKind {
     pub const fn is_credit(self) -> Option<bool> {
         match self {
             Self::EvCashoutRiskPaid => Some(false),
+            Self::EvCashoutReceived => Some(true),
         }
     }
 }
 
-stored_identifier!(AdjustmentKind, "adjustment kind", [EvCashoutRiskPaid]);
+stored_identifier!(
+    AdjustmentKind,
+    "adjustment kind",
+    [EvCashoutRiskPaid, EvCashoutReceived]
+);
 
 /// Money credited to (positive) or debited from (negative) a player outside the pot.
 /// Adjustments do not affect pot accounting but do affect the player's net result.
@@ -615,7 +624,7 @@ mod tests {
         assert_eq!(round_trip(BettingLimit::ALL, BettingLimit::as_str), 1);
         assert_eq!(round_trip(ActionType::ALL, ActionType::as_str), 10);
         assert_eq!(round_trip(DeductionKind::ALL, DeductionKind::as_str), 3);
-        assert_eq!(round_trip(AdjustmentKind::ALL, AdjustmentKind::as_str), 1);
+        assert_eq!(round_trip(AdjustmentKind::ALL, AdjustmentKind::as_str), 2);
         for code in 0..=4 {
             assert_eq!(Street::from_code(code).map(Street::code), Some(code));
         }
@@ -670,5 +679,6 @@ mod tests {
         );
         assert_eq!(outcome.checked_total_adjustments(), Some(dec!(-0.48)));
         assert_eq!(AdjustmentKind::EvCashoutRiskPaid.is_credit(), Some(false));
+        assert_eq!(AdjustmentKind::EvCashoutReceived.is_credit(), Some(true));
     }
 }

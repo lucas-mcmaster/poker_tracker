@@ -148,6 +148,14 @@ static RE_EV_PAYS: LazyLock<Regex> = LazyLock::new(|| {
     ))
 });
 
+static RE_EV_RECEIVES: LazyLock<Regex> = LazyLock::new(|| {
+    compile_static_regex(concat!(
+        r"^(?P<name>.+?): Receives Cashout \(\$(?P<amt>",
+        amt!(),
+        r")\)$"
+    ))
+});
+
 static RE_TOTAL_POT: LazyLock<Regex> = LazyLock::new(|| {
     compile_static_regex(concat!(
         r"^Total pot \$(?P<pot>",
@@ -213,6 +221,14 @@ static RE_SEAT_SHOWED: LazyLock<Regex> =
 static RE_SEAT_CASHOUT_SUFFIX: LazyLock<Regex> = LazyLock::new(|| {
     compile_static_regex(concat!(
         r"^(?P<body>.+), Cashout Risk \(\$(?P<amt>",
+        amt!(),
+        r")\)$"
+    ))
+});
+
+static RE_SEAT_EV_CASHOUT_SUFFIX: LazyLock<Regex> = LazyLock::new(|| {
+    compile_static_regex(concat!(
+        r"^(?P<body>.+), EV Cashout \(\$(?P<amt>",
         amt!(),
         r")\)$"
     ))
@@ -376,6 +392,8 @@ struct SummaryFacts {
     seat_won: HashMap<u8, Decimal>,
     /// Seat number -> `Cashout Risk ($x)`.
     seat_cashout_risk: HashMap<u8, Decimal>,
+    /// Seat number -> `EV Cashout ($x)`.
+    seat_cashout_received: HashMap<u8, Decimal>,
     seat_lines: Vec<u8>,
     /// Seat number -> position labels and result printed on its summary line.
     seat_summaries: HashMap<u8, SeatSummary>,
@@ -395,7 +413,11 @@ enum SeatResult {
     /// `won ($x)` / `collected ($x)` without a showdown.
     Won { verb: PayoutVerb },
     /// `showed [c1 c2] and won|lost …`, with one outcome per runout.
-    Showed { cards: Vec<Card>, outcomes: usize },
+    Showed {
+        cards: Vec<Card>,
+        outcomes: usize,
+        all_lost: bool,
+    },
     /// `showed [c1]` / `showed [c1 c2] and won|collected ($x)` without a showdown.
     ShowedUncontested { cards: Vec<Card>, verb: PayoutVerb },
 }
@@ -409,12 +431,18 @@ struct SeatSummary {
     result: SeatResult,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CashoutSettlement {
+    RiskPaid(Decimal),
+    Received(Decimal),
+}
+
 /// EV cashout chosen but not yet settled.
 #[derive(Debug)]
 struct PendingCashout {
     player_name: String,
     chosen_on: Street,
-    risk_paid: Option<Decimal>,
+    settlement: Option<CashoutSettlement>,
 }
 
 /// Mutable state accumulated while walking one hand block.
@@ -719,7 +747,7 @@ impl HandState {
             self.cashouts.push(PendingCashout {
                 player_name: name.to_string(),
                 chosen_on: street,
-                risk_paid: None,
+                settlement: None,
             });
             return Ok(());
         }
@@ -727,15 +755,42 @@ impl HandState {
         if let Some(caps) = RE_EV_PAYS.captures(line) {
             let name = cap(&caps, "name");
             let amount = parse_decimal(cap(&caps, "amt"))?;
+            if street != Street::River {
+                return Err(ParseError::UnsupportedAdjustment {
+                    line: line_idx,
+                    content: line.to_string(),
+                });
+            }
             let pending = self
                 .cashouts
                 .iter_mut()
-                .find(|c| c.player_name == name && c.risk_paid.is_none())
+                .find(|c| c.player_name == name && c.settlement.is_none())
                 .ok_or_else(|| ParseError::UnsupportedAdjustment {
                     line: line_idx,
                     content: line.to_string(),
                 })?;
-            pending.risk_paid = Some(amount);
+            pending.settlement = Some(CashoutSettlement::RiskPaid(amount));
+            return Ok(());
+        }
+
+        if let Some(caps) = RE_EV_RECEIVES.captures(line) {
+            let name = cap(&caps, "name");
+            let amount = parse_decimal(cap(&caps, "amt"))?;
+            if street != Street::River {
+                return Err(ParseError::UnsupportedAdjustment {
+                    line: line_idx,
+                    content: line.to_string(),
+                });
+            }
+            let pending = self
+                .cashouts
+                .iter_mut()
+                .find(|c| c.player_name == name && c.settlement.is_none())
+                .ok_or_else(|| ParseError::UnsupportedAdjustment {
+                    line: line_idx,
+                    content: line.to_string(),
+                })?;
+            pending.settlement = Some(CashoutSettlement::Received(amount));
             return Ok(());
         }
 
@@ -963,6 +1018,7 @@ impl HandState {
             };
             let mut won = Decimal::ZERO;
             let mut cashout_risk = None;
+            let mut cashout_received = None;
             summary.result = if let Some(m) = RE_SEAT_FOLDED.captures(tail) {
                 let street = match cap(&m, "when") {
                     "before Flop" => Street::Preflop,
@@ -1000,14 +1056,31 @@ impl HandState {
                 if let Some(c) = RE_SEAT_CASHOUT_SUFFIX.captures(body) {
                     cashout_risk = Some(parse_decimal(cap(&c, "amt"))?);
                     body = c.name("body").map_or("", |b| b.as_str());
+                    if body.contains("Cashout") {
+                        return Err(ParseError::UnsupportedAdjustment {
+                            line: line_idx,
+                            content: line.to_string(),
+                        });
+                    }
+                } else if let Some(c) = RE_SEAT_EV_CASHOUT_SUFFIX.captures(body) {
+                    cashout_received = Some(parse_decimal(cap(&c, "amt"))?);
+                    body = c.name("body").map_or("", |b| b.as_str());
+                    if body.contains("Cashout") {
+                        return Err(ParseError::UnsupportedAdjustment {
+                            line: line_idx,
+                            content: line.to_string(),
+                        });
+                    }
                 }
                 let mut outcomes = 0usize;
+                let mut all_lost = true;
                 for outcome in body.split(", and ") {
                     let o = RE_SEAT_RUN_OUTCOME.captures(outcome).ok_or_else(refuse)?;
                     if let Some(amt) = o.name("amt") {
                         won = won
                             .checked_add(parse_decimal(amt.as_str())?)
                             .ok_or_else(refuse)?;
+                        all_lost = false;
                     }
                     outcomes += 1;
                 }
@@ -1018,7 +1091,11 @@ impl HandState {
                         token: cards_raw.to_string(),
                     });
                 }
-                SeatResult::Showed { cards, outcomes }
+                SeatResult::Showed {
+                    cards,
+                    outcomes,
+                    all_lost,
+                }
             } else {
                 return Err(refuse());
             };
@@ -1027,6 +1104,9 @@ impl HandState {
             if let Some(risk) = cashout_risk {
                 self.summary.seat_cashout_risk.insert(seat, risk);
             }
+            if let Some(received) = cashout_received {
+                self.summary.seat_cashout_received.insert(seat, received);
+            }
             return Ok(());
         }
 
@@ -1034,7 +1114,11 @@ impl HandState {
     }
 
     /// Cross-checks the summary section against the hand body.
-    fn check_summary(&mut self, header: &HandHeader) -> Result<(), ParseError> {
+    fn check_summary(
+        &mut self,
+        header: &HandHeader,
+        last_line_idx: usize,
+    ) -> Result<(), ParseError> {
         let hand_id = header.site_hand_id.as_str();
         let mismatch = |detail: String| ParseError::SummaryMismatch {
             hand_id: hand_id.to_string(),
@@ -1060,6 +1144,26 @@ impl HandState {
 
         // Runouts.
         let multi = self.boards.iter().any(|b| b.run_index > 0);
+
+        if !self.cashouts.is_empty() && (self.winners.len() > 1 || multi) {
+            return Err(ParseError::UnsupportedAdjustment {
+                line: last_line_idx,
+                content: "EV Cashout in split pot or multi-run hand is unsupported".to_string(),
+            });
+        }
+
+        for c in &self.cashouts {
+            if c.settlement.is_none() {
+                return Err(ParseError::UnsupportedAdjustment {
+                    line: last_line_idx,
+                    content: format!(
+                        "'{}' chose EV Cashout but no 'Pays Cashout Risk' or 'Receives Cashout' settlement was found",
+                        c.player_name
+                    ),
+                });
+            }
+        }
+
         let expected_runs = if multi { Some(self.boards.len()) } else { None };
         if s.stated_run_count != expected_runs {
             return Err(mismatch(format!(
@@ -1116,16 +1220,51 @@ impl HandState {
                     p.name
                 )));
             }
-            let body_risk = self
-                .cashouts
-                .iter()
-                .find(|c| c.player_name == p.name)
-                .and_then(|c| c.risk_paid);
-            if body_risk != s.seat_cashout_risk.get(&p.seat).copied() {
-                return Err(mismatch(format!(
-                    "cashout risk for '{}' differs from summary",
-                    p.name
-                )));
+            let body_cashout = self.cashouts.iter().find(|c| c.player_name == p.name);
+            let summary_risk = s.seat_cashout_risk.get(&p.seat).copied();
+            let summary_received = s.seat_cashout_received.get(&p.seat).copied();
+
+            match body_cashout.and_then(|c| c.settlement) {
+                Some(CashoutSettlement::RiskPaid(amt)) => {
+                    if summary_risk != Some(amt) || summary_received.is_some() {
+                        return Err(mismatch(format!(
+                            "cashout risk for '{}' differs from summary",
+                            p.name
+                        )));
+                    }
+                    if body_won <= Decimal::ZERO {
+                        return Err(mismatch(format!(
+                            "'{}' paid cashout risk but did not win",
+                            p.name
+                        )));
+                    }
+                }
+                Some(CashoutSettlement::Received(amt)) => {
+                    if summary_received != Some(amt) || summary_risk.is_some() {
+                        return Err(mismatch(format!(
+                            "cashout received for '{}' differs from summary",
+                            p.name
+                        )));
+                    }
+                    let is_showed_all_lost = matches!(
+                        s.seat_summaries.get(&p.seat).map(|s| &s.result),
+                        Some(SeatResult::Showed { all_lost: true, .. })
+                    );
+                    if !is_showed_all_lost || body_won != Decimal::ZERO {
+                        return Err(mismatch(format!(
+                            "'{}' received cashout but did not lose showdown",
+                            p.name
+                        )));
+                    }
+                }
+                None => {
+                    if summary_risk.is_some() || summary_received.is_some() {
+                        return Err(mismatch(format!(
+                            "unexpected cashout in summary for '{}'",
+                            p.name
+                        )));
+                    }
+                }
             }
         }
 
@@ -1184,7 +1323,9 @@ impl HandState {
                 SeatResult::Won { verb } => {
                     folded_on.is_none() && !contested && (*verb == PayoutVerb::Won) == flop_dealt
                 }
-                SeatResult::Showed { cards, outcomes } => {
+                SeatResult::Showed {
+                    cards, outcomes, ..
+                } => {
                     let mut shown = cards.clone();
                     let mut known: Vec<Card> = p.known_cards().collect();
                     shown.sort_unstable();
@@ -1522,26 +1663,31 @@ impl HandParser for GgPokerParser {
                 ),
             });
         }
-        state.check_summary(&header)?;
+        state.check_summary(&header, last_line_idx)?;
 
         // GGPoker EV Cashout -> site-neutral player adjustment (a debit of the risk paid).
         let mut adjustments = Vec::with_capacity(state.cashouts.len());
         for c in state.cashouts {
-            let Some(risk_paid) = c.risk_paid else {
+            let Some(settlement) = c.settlement else {
                 return Err(ParseError::UnsupportedAdjustment {
                     line: last_line_idx,
                     content: format!(
-                        "'{}' chose EV Cashout but no 'Pays Cashout Risk' settlement was found \
-                         (the receiving-side format is not yet supported)",
+                        "'{}' chose EV Cashout but no 'Pays Cashout Risk' or 'Receives Cashout' settlement was found",
                         c.player_name
                     ),
                 });
             };
+            let (kind, amount) = match settlement {
+                CashoutSettlement::RiskPaid(risk) => (AdjustmentKind::EvCashoutRiskPaid, -risk),
+                CashoutSettlement::Received(received) => {
+                    (AdjustmentKind::EvCashoutReceived, received)
+                }
+            };
             adjustments.push(PlayerAdjustment {
                 player_name: c.player_name,
-                kind: AdjustmentKind::EvCashoutRiskPaid,
+                kind,
                 street: c.chosen_on,
-                amount: -risk_paid,
+                amount,
             });
         }
 
