@@ -12,12 +12,15 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
 use common::{
-    DEAD_MISSED_BLIND, EV_CASHOUT, FIXTURE_CURRENCY, HU_FLOP, HU_PREFLOP_FOLD, HU_SHOWDOWN,
-    ONE_CARD_SHOW_AFTER_FOLD, RIT_THREE_TIMES_PREFLOP, RIT_TWICE_FLOP_ALL_IN, SAMPLE_SESSION,
-    THREE_WAY_ALL_IN_SIDE_POT, UNCALLED_ALL_IN_SPLIT, WALK, gg,
+    BODY_AND_SUMMARY_ONE_CARD, DEAD_MISSED_BLIND, EV_CASHOUT, FIXTURE_CURRENCY,
+    HERO_SUMMARY_SHOW_ONE_CARD, HU_FLOP, HU_PREFLOP_FOLD, HU_SHOWDOWN, ONE_CARD_SHOW_AFTER_FOLD,
+    RIT_THREE_TIMES_PREFLOP, RIT_TWICE_FLOP_ALL_IN, SAMPLE_SESSION, SUMMARY_SHOW_COLLECTED,
+    SUMMARY_SHOW_ONE_CARD, SUMMARY_SHOW_TWO_CARDS, THREE_WAY_ALL_IN_SIDE_POT,
+    UNCALLED_ALL_IN_SPLIT, WALK, gg,
 };
 use poker_tracker::domain::{
-    ActionType, AdjustmentKind, CanonicalHand, Card, CurrencyCode, DeductionKind, Platform, Street,
+    ActionType, AdjustmentKind, CanonicalHand, Card, CurrencyCode, DeductionKind, Platform, Player,
+    Street,
 };
 use poker_tracker::parser::{GgPokerParser, HandParser, ParseError};
 
@@ -410,6 +413,211 @@ fn heads_up_summary_label_refusals_and_ring_regression() {
     let missing_btn = ring_hand.replace("Seat 4: Hero (button)", "Seat 4: Hero");
     assert!(matches!(
         parse_err(&missing_btn),
+        ParseError::SummaryMismatch { .. }
+    ));
+}
+
+#[test]
+fn uncontested_summary_shows_parse_known_cards_and_nets() {
+    let p_of = |hand: &CanonicalHand, name: &str| -> Player {
+        hand.players
+            .iter()
+            .find(|p| p.name == name)
+            .cloned()
+            .unwrap()
+    };
+
+    // 1. SUMMARY_SHOW_ONE_CARD (HD140656328): opponent shows [2c] and won ($3.66)
+    let h1 = parse(SUMMARY_SHOW_ONE_CARD);
+    assert_eq!(p_of(&h1, "76fd4643").hole_cards, [Some(card("2c")), None]);
+    assert_eq!(
+        p_of(&h1, "Hero").hole_cards,
+        [Some(card("2s")), Some(card("Qs"))]
+    );
+    assert_eq!(p_of(&h1, "9f795b5b").hole_cards, [None, None]);
+    assert_eq!(p_of(&h1, "24a1a9e0").hole_cards, [None, None]);
+    assert_eq!(p_of(&h1, "b29fca73").hole_cards, [None, None]);
+    assert_eq!(net_of(&h1, "Hero"), dec!(0.00));
+    assert_eq!(net_of(&h1, "76fd4643"), dec!(1.76));
+    assert_eq!(net_of(&h1, "9f795b5b"), dec!(-1.90));
+    assert_eq!(net_of(&h1, "24a1a9e0"), dec!(-0.05));
+    assert_eq!(net_of(&h1, "b29fca73"), dec!(-0.10));
+
+    // 2. HERO_SUMMARY_SHOW_ONE_CARD (HD140647731): Hero shows [Ts] and won ($1.25)
+    let h2 = parse(HERO_SUMMARY_SHOW_ONE_CARD);
+    assert_eq!(
+        p_of(&h2, "Hero").hole_cards,
+        [Some(card("Ts")), Some(card("Tc"))]
+    );
+    assert_eq!(p_of(&h2, "62688fe9").hole_cards, [None, None]);
+    assert_eq!(p_of(&h2, "dc7d0eb4").hole_cards, [None, None]);
+    assert_eq!(p_of(&h2, "1fba9f17").hole_cards, [None, None]);
+    assert_eq!(p_of(&h2, "aa56bdcc").hole_cards, [None, None]);
+    assert_eq!(p_of(&h2, "f0d370b7").hole_cards, [None, None]);
+    assert_eq!(net_of(&h2, "Hero"), dec!(0.67));
+    assert_eq!(net_of(&h2, "62688fe9"), dec!(-0.05));
+    assert_eq!(net_of(&h2, "dc7d0eb4"), dec!(-0.10));
+    assert_eq!(net_of(&h2, "1fba9f17"), dec!(0.00));
+    assert_eq!(net_of(&h2, "aa56bdcc"), dec!(0.00));
+    assert_eq!(net_of(&h2, "f0d370b7"), dec!(-0.58));
+
+    // 3. BODY_AND_SUMMARY_ONE_CARD (HD140646055): opponent shows [6s] in body and summary
+    let h3 = parse(BODY_AND_SUMMARY_ONE_CARD);
+    assert_eq!(p_of(&h3, "dcd1bbfb").hole_cards, [Some(card("6s")), None]);
+    assert_eq!(
+        p_of(&h3, "Hero").hole_cards,
+        [Some(card("Qd")), Some(card("Qc"))]
+    );
+    assert_eq!(p_of(&h3, "174d6de3").hole_cards, [None, None]);
+    assert_eq!(p_of(&h3, "53be55c0").hole_cards, [None, None]);
+    assert_eq!(p_of(&h3, "ed5884a").hole_cards, [None, None]);
+    assert_eq!(p_of(&h3, "a2886689").hole_cards, [None, None]);
+    assert_eq!(net_of(&h3, "Hero"), dec!(-1.20));
+    assert_eq!(net_of(&h3, "174d6de3"), dec!(0.00));
+    assert_eq!(net_of(&h3, "53be55c0"), dec!(-0.05));
+    assert_eq!(net_of(&h3, "ed5884a"), dec!(-0.10));
+    assert_eq!(net_of(&h3, "a2886689"), dec!(0.00));
+    assert_eq!(net_of(&h3, "dcd1bbfb"), dec!(1.23));
+
+    // 4. SUMMARY_SHOW_TWO_CARDS (HD140650557): opponent shows [Qs Jh] and won ($4.66)
+    let h4 = parse(SUMMARY_SHOW_TWO_CARDS);
+    assert_eq!(
+        p_of(&h4, "2d5ce8a9").hole_cards,
+        [Some(card("Qs")), Some(card("Jh"))]
+    );
+    assert_eq!(
+        p_of(&h4, "Hero").hole_cards,
+        [Some(card("Js")), Some(card("Ac"))]
+    );
+    assert_eq!(p_of(&h4, "6570ba77").hole_cards, [None, None]);
+    assert_eq!(p_of(&h4, "4af6a555").hole_cards, [None, None]);
+    assert_eq!(net_of(&h4, "Hero"), dec!(-2.50));
+    assert_eq!(net_of(&h4, "2d5ce8a9"), dec!(2.16));
+    assert_eq!(net_of(&h4, "6570ba77"), dec!(0.00));
+    assert_eq!(net_of(&h4, "4af6a555"), dec!(0.00));
+
+    // 5. SUMMARY_SHOW_COLLECTED (HD140652448): opponent shows [Qs Ah] and collected ($0.53)
+    let h5 = parse(SUMMARY_SHOW_COLLECTED);
+    assert_eq!(
+        p_of(&h5, "2ff4bf29").hole_cards,
+        [Some(card("Qs")), Some(card("Ah"))]
+    );
+    assert_eq!(
+        p_of(&h5, "Hero").hole_cards,
+        [Some(card("Kh")), Some(card("3c"))]
+    );
+    assert_eq!(p_of(&h5, "f82517").hole_cards, [None, None]);
+    assert_eq!(p_of(&h5, "2ad6949d").hole_cards, [None, None]);
+    assert_eq!(p_of(&h5, "c7bdd1e4").hole_cards, [None, None]);
+    assert_eq!(p_of(&h5, "edba49df").hole_cards, [None, None]);
+    assert_eq!(net_of(&h5, "2ff4bf29"), dec!(0.33));
+    assert_eq!(net_of(&h5, "f82517"), dec!(-0.05));
+    assert_eq!(net_of(&h5, "2ad6949d"), dec!(-0.10));
+    assert_eq!(net_of(&h5, "c7bdd1e4"), dec!(0.00));
+    assert_eq!(net_of(&h5, "edba49df"), dec!(-0.20));
+    assert_eq!(net_of(&h5, "Hero"), dec!(0.00));
+}
+
+#[test]
+fn uncontested_summary_shows_refusals() {
+    // 1. A summary card that is on the board -> ConflictingHoleCards or DuplicateCard
+    // Board is [6h 7h Qd]; seat 2 shows [6h] instead of [2c]
+    let board_conflict = SUMMARY_SHOW_ONE_CARD.replace(
+        "Seat 2: 76fd4643 showed [2c] and won ($3.66)",
+        "Seat 2: 76fd4643 showed [6h] and won ($3.66)",
+    );
+    assert!(matches!(
+        parse_err(&board_conflict),
+        ParseError::ConflictingHoleCards { .. } | ParseError::DuplicateCard { .. }
+    ));
+
+    // 2. A Hero summary card Hero was not dealt -> ConflictingHoleCards
+    // Hero was dealt [Ts Tc]; summary shows [Ah]
+    let hero_conflict = HERO_SUMMARY_SHOW_ONE_CARD.replace(
+        "Seat 4: Hero showed [Ts] and won ($1.25)",
+        "Seat 4: Hero showed [Ah] and won ($1.25)",
+    );
+    assert!(matches!(
+        parse_err(&hero_conflict),
+        ParseError::ConflictingHoleCards { ref player_name } if player_name == "Hero"
+    ));
+
+    // 3. ` with a pair of Aces` appended to a one-card summary show -> InvalidCardSyntax or UnrecognizedLine
+    let with_desc = SUMMARY_SHOW_ONE_CARD.replace(
+        "Seat 2: 76fd4643 showed [2c] and won ($3.66)",
+        "Seat 2: 76fd4643 showed [2c] and won ($3.66) with a pair of Aces",
+    );
+    assert!(matches!(
+        parse_err(&with_desc),
+        ParseError::InvalidCardSyntax { .. } | ParseError::UnrecognizedLine { .. }
+    ));
+
+    // 4. `collected` in a hand with a flop, or `won` in a hand without one, on both a showed line and a plain line -> SummaryMismatch
+    // 4a. Showed line with flop, using `collected`
+    let flop_showed_collected = SUMMARY_SHOW_ONE_CARD.replace(
+        "Seat 2: 76fd4643 showed [2c] and won ($3.66)",
+        "Seat 2: 76fd4643 showed [2c] and collected ($3.66)",
+    );
+    assert!(matches!(
+        parse_err(&flop_showed_collected),
+        ParseError::SummaryMismatch { .. }
+    ));
+
+    // 4b. Showed line without flop, using `won`
+    let preflop_showed_won = SUMMARY_SHOW_COLLECTED.replace(
+        "Seat 1: 2ff4bf29 (button) showed [Qs Ah] and collected ($0.53)",
+        "Seat 1: 2ff4bf29 (button) showed [Qs Ah] and won ($0.53)",
+    );
+    assert!(matches!(
+        parse_err(&preflop_showed_won),
+        ParseError::SummaryMismatch { .. }
+    ));
+
+    // 4c. Plain line with flop, using `collected`
+    let flop_plain_collected = HU_FLOP.replace(
+        "Seat 4: Hero (big blind) won ($0.38)",
+        "Seat 4: Hero (big blind) collected ($0.38)",
+    );
+    assert!(matches!(
+        parse_err(&flop_plain_collected),
+        ParseError::SummaryMismatch { .. }
+    ));
+
+    // 4d. Plain line without flop, using `won`
+    let preflop_plain_won = HU_PREFLOP_FOLD.replace(
+        "Seat 6: 445e6868 (big blind) collected ($0.1)",
+        "Seat 6: 445e6868 (big blind) won ($0.1)",
+    );
+    assert!(matches!(
+        parse_err(&preflop_plain_won),
+        ParseError::SummaryMismatch { .. }
+    ));
+
+    // 5. Three cards -> refused (InvalidCardSyntax)
+    let three_cards_1 = SUMMARY_SHOW_ONE_CARD.replace(
+        "Seat 2: 76fd4643 showed [2c] and won ($3.66)",
+        "Seat 2: 76fd4643 showed [2c 3c 4c] and won ($3.66)",
+    );
+    assert!(matches!(
+        parse_err(&three_cards_1),
+        ParseError::InvalidCardSyntax { .. }
+    ));
+    let three_cards_2 = SUMMARY_SHOW_TWO_CARDS.replace(
+        "Seat 5: 2d5ce8a9 (big blind) showed [Qs Jh] and won ($4.66)",
+        "Seat 5: 2d5ce8a9 (big blind) showed [Qs Jh 2d] and won ($4.66)",
+    );
+    assert!(matches!(
+        parse_err(&three_cards_2),
+        ParseError::InvalidCardSyntax { .. }
+    ));
+
+    // 6. The uncontested form (ShowedUncontested) on a player in a contested showdown -> SummaryMismatch
+    let uncontested_in_showdown = HU_SHOWDOWN.replace(
+        "Seat 6: 445e6868 (small blind) showed [4c Tc] and won ($0.38) with a pair of Fours",
+        "Seat 6: 445e6868 (small blind) showed [4c Tc] and won ($0.38)",
+    );
+    assert!(matches!(
+        parse_err(&uncontested_in_showdown),
         ParseError::SummaryMismatch { .. }
     ));
 }

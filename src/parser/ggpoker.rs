@@ -185,7 +185,15 @@ static RE_SEAT_FOLDED: LazyLock<Regex> = LazyLock::new(|| {
 
 static RE_SEAT_WON: LazyLock<Regex> = LazyLock::new(|| {
     compile_static_regex(concat!(
-        r"^ (?:won|collected) \(\$(?P<amt>",
+        r"^ (?P<verb>won|collected) \(\$(?P<amt>",
+        amt!(),
+        r")\)$"
+    ))
+});
+
+static RE_SEAT_SHOWED_UNCONTESTED: LazyLock<Regex> = LazyLock::new(|| {
+    compile_static_regex(concat!(
+        r"^ showed \[(?P<cards>[^\]]+)\] and (?P<verb>won|collected) \(\$(?P<amt>",
         amt!(),
         r")\)$"
     ))
@@ -365,15 +373,23 @@ struct SummaryFacts {
     seat_summaries: HashMap<u8, SeatSummary>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PayoutVerb {
+    Won,
+    Collected,
+}
+
 /// How a player's hand ended, as printed on their summary seat line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SeatResult {
     /// `folded before Flop` / `folded on the <street>`, with or without `(didn't bet)`.
     Folded { street: Street, didnt_bet: bool },
     /// `won ($x)` / `collected ($x)` without a showdown.
-    Won,
+    Won { verb: PayoutVerb },
     /// `showed [c1 c2] and won|lost …`, with one outcome per runout.
     Showed { cards: Vec<Card>, outcomes: usize },
+    /// `showed [c1]` / `showed [c1 c2] and won|collected ($x)` without a showdown.
+    ShowedUncontested { cards: Vec<Card>, verb: PayoutVerb },
 }
 
 /// Labels and result read from one summary seat line.
@@ -818,7 +834,9 @@ impl HandState {
                 button: false,
                 small_blind: false,
                 big_blind: false,
-                result: SeatResult::Won,
+                result: SeatResult::Won {
+                    verb: PayoutVerb::Won,
+                },
             };
             let mut tail = after_name;
             while let Some(m) = RE_SEAT_LABEL.captures(tail) {
@@ -857,7 +875,25 @@ impl HandState {
                 }
             } else if let Some(m) = RE_SEAT_WON.captures(tail) {
                 won = parse_decimal(cap(&m, "amt"))?;
-                SeatResult::Won
+                let verb = match cap(&m, "verb") {
+                    "won" => PayoutVerb::Won,
+                    _ => PayoutVerb::Collected,
+                };
+                SeatResult::Won { verb }
+            } else if let Some(m) = RE_SEAT_SHOWED_UNCONTESTED.captures(tail) {
+                won = parse_decimal(cap(&m, "amt"))?;
+                let verb = match cap(&m, "verb") {
+                    "won" => PayoutVerb::Won,
+                    _ => PayoutVerb::Collected,
+                };
+                let cards_raw = cap(&m, "cards");
+                let cards = parse_card_list(cards_raw)?;
+                if cards.is_empty() || cards.len() > 2 {
+                    return Err(ParseError::InvalidCardSyntax {
+                        token: cards_raw.to_string(),
+                    });
+                }
+                SeatResult::ShowedUncontested { cards, verb }
             } else if let Some(m) = RE_SEAT_SHOWED.captures(tail) {
                 let mut body = cap(&m, "outcomes");
                 if let Some(c) = RE_SEAT_CASHOUT_SUFFIX.captures(body) {
@@ -874,10 +910,14 @@ impl HandState {
                     }
                     outcomes += 1;
                 }
-                SeatResult::Showed {
-                    cards: parse_card_list(cap(&m, "cards"))?,
-                    outcomes,
+                let cards_raw = cap(&m, "cards");
+                let cards = parse_card_list(cards_raw)?;
+                if cards.len() != 2 {
+                    return Err(ParseError::InvalidCardSyntax {
+                        token: cards_raw.to_string(),
+                    });
                 }
+                SeatResult::Showed { cards, outcomes }
             } else {
                 return Err(refuse());
             };
@@ -893,12 +933,28 @@ impl HandState {
     }
 
     /// Cross-checks the summary section against the hand body.
-    fn check_summary(&self, header: &HandHeader) -> Result<(), ParseError> {
+    fn check_summary(&mut self, header: &HandHeader) -> Result<(), ParseError> {
         let hand_id = header.site_hand_id.as_str();
         let mismatch = |detail: String| ParseError::SummaryMismatch {
             hand_id: hand_id.to_string(),
             detail,
         };
+
+        // Record known cards from ShowedUncontested before cross-checks.
+        for player in &mut self.players {
+            if let Some(seat_sum) = self.summary.seat_summaries.get(&player.seat)
+                && let SeatResult::ShowedUncontested { cards, .. } = &seat_sum.result
+            {
+                for card in cards {
+                    if !player.record_known_card(*card) {
+                        return Err(ParseError::ConflictingHoleCards {
+                            player_name: player.name.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
         let s = &self.summary;
 
         // Runouts.
@@ -990,6 +1046,7 @@ impl HandState {
             .count()
             >= 2;
         let runs = self.boards.len().max(1);
+        let flop_dealt = self.boards.iter().any(|b| b.flop.is_some());
         for p in &self.players {
             let seat_line = s
                 .seat_summaries
@@ -1023,14 +1080,29 @@ impl HandState {
                 SeatResult::Folded { street, didnt_bet } => {
                     folded_on == Some(*street) && *didnt_bet == !contributed
                 }
-                // Cards an uncontested winner shows voluntarily do not change the line.
-                SeatResult::Won => folded_on.is_none() && !contested,
+                SeatResult::Won { verb } => {
+                    folded_on.is_none() && !contested && (*verb == PayoutVerb::Won) == flop_dealt
+                }
                 SeatResult::Showed { cards, outcomes } => {
                     let mut shown = cards.clone();
                     let mut known: Vec<Card> = p.known_cards().collect();
                     shown.sort_unstable();
                     known.sort_unstable();
                     folded_on.is_none() && shown.len() == 2 && shown == known && *outcomes == runs
+                }
+                SeatResult::ShowedUncontested { cards, verb } => {
+                    let no_dups = if cards.len() == 2 {
+                        cards[0] != cards[1]
+                    } else {
+                        true
+                    };
+                    folded_on.is_none()
+                        && !contested
+                        && runs == 1
+                        && (1..=2).contains(&cards.len())
+                        && no_dups
+                        && cards.iter().all(|c| p.known_cards().any(|k| k == *c))
+                        && (*verb == PayoutVerb::Won) == flop_dealt
                 }
             };
             if !ok {
