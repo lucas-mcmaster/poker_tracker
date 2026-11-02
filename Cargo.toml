@@ -1,0 +1,41 @@
+[package]
+name = "poker_tracker"
+version = "0.5.0"
+edition = "2024"
+# Minimum supported Rust: 1.88 (first release with stable `let`-chains in edition 2024).
+# Verified toolchain for this blueprint: rustc 1.97.0.
+rust-version = "1.88"
+authors = ["djyoc"]
+description = "A fast, modular post-session poker tracker and parser"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+rust_decimal = { version = "1.36", features = ["serde", "std"] }
+regex = "1.11"
+thiserror = "2.0"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.10", features = ["v7"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"
+walkdir = "2.5"
+
+[dev-dependencies]
+pretty_assertions = "1.4"
+rust_decimal_macros = "1.36"
+serde_json = "1.0"
+tempfile = "3.13"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+float_arithmetic = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
