@@ -13,15 +13,18 @@ use rust_decimal_macros::dec;
 
 use common::{
     BODY_AND_SUMMARY_ONE_CARD, DEAD_MISSED_BLIND, DOUBLE_STRADDLE, EV_CASHOUT, EV_CASHOUT_CALLER,
-    EV_CASHOUT_FLOP, EV_CASHOUT_RECEIVED, FIXTURE_CURRENCY, HERO_SUMMARY_SHOW_ONE_CARD, HU_FLOP,
-    HU_PREFLOP_FOLD, HU_SHOWDOWN, ONE_CARD_SHOW_AFTER_FOLD, RIT_THREE_TIMES_PREFLOP,
-    RIT_TWICE_FLOP_ALL_IN, SAMPLE_SESSION, STRADDLE_BB_WALK, STRADDLE_BUTTON,
-    STRADDLE_SB_ALL_IN_POT, STRADDLE_UTG_OPTION, SUMMARY_SHOW_COLLECTED, SUMMARY_SHOW_ONE_CARD,
-    SUMMARY_SHOW_TWO_CARDS, THREE_WAY_ALL_IN_SIDE_POT, UNCALLED_ALL_IN_SPLIT, WALK, gg,
+    EV_CASHOUT_FLOP, EV_CASHOUT_RECEIVED, EXTRA_BIG_BLIND, EXTRA_BIG_BLIND_2, FIXTURE_CURRENCY,
+    FOLDED_ONE_CARD_SHOW, FOUR_WAY_ALL_IN, HERO_SUMMARY_SHOW_ONE_CARD, HERO_SUMMARY_SHOW_TWO_CARDS,
+    HERO_SUMMARY_SHOW_TWO_CARDS_2, HU_FLOP, HU_PREFLOP_FOLD, HU_SHOWDOWN, MISSED_AND_BIG_BLIND,
+    MISSED_AND_BIG_BLIND_2, MISSED_BLIND_ONLY, MISSED_BLIND_ONLY_2, ONE_CARD_SHOW_AFTER_FOLD,
+    RIT_THREE_TIMES_PREFLOP, RIT_TWICE_FLOP_ALL_IN, RIT_TWICE_FLOP_REAL, RIT_TWICE_TURN,
+    SAMPLE_SESSION, STRADDLE_BB_WALK, STRADDLE_BUTTON, STRADDLE_SB_ALL_IN_POT, STRADDLE_UTG_OPTION,
+    SUMMARY_SHOW_COLLECTED, SUMMARY_SHOW_ONE_CARD, SUMMARY_SHOW_TWO_CARDS,
+    THREE_WAY_ALL_IN_SIDE_POT, UNCALLED_ALL_IN_SPLIT, WALK, gg,
 };
 use poker_tracker::domain::{
-    ActionType, AdjustmentKind, CanonicalHand, Card, CurrencyCode, DeductionKind, Platform, Player,
-    Street,
+    ActionType, AdjustmentKind, CanonicalHand, Card, CommunityCards, CurrencyCode, DeductionKind,
+    Platform, Player, Street,
 };
 use poker_tracker::parser::{GgPokerParser, HandParser, ParseError};
 
@@ -947,6 +950,143 @@ fn recognizes_ggpoker_exports_only() {
     ));
     assert!(!parser.recognizes("random notes\nPoker Hand #HD1: ..."));
     assert!(!parser.recognizes(""));
+}
+
+#[test]
+fn v3_6_single_hand_regression_fixtures() {
+    let parse_cards = |s: &str| -> Vec<Card> { s.split_whitespace().map(card).collect() };
+    let board_cards = |b: &CommunityCards| -> Vec<Card> { b.cards().collect() };
+
+    // 1. RIT_TWICE_TURN (HD140644794) - Run it twice from the turn
+    let h1 = parse(RIT_TWICE_TURN);
+    assert_eq!(net_of(&h1, "Hero"), dec!(0.00));
+    assert_eq!(net_of(&h1, "174d6de3"), dec!(10.76));
+    assert_eq!(net_of(&h1, "53be55c0"), dec!(-11.26));
+    assert_eq!(net_of(&h1, "9b8067e5"), dec!(-0.50));
+    assert_eq!(net_of(&h1, "a2886689"), dec!(-0.10));
+    assert_eq!(net_of(&h1, "6e766d6a"), dec!(0.00));
+    assert_eq!(h1.boards.len(), 2);
+    assert_eq!(board_cards(&h1.boards[0]), parse_cards("9h Kc 6d Js Ks"));
+    assert_eq!(board_cards(&h1.boards[1]), parse_cards("9h Kc 6d Js Kh"));
+
+    // 2. RIT_TWICE_FLOP_REAL (HD145411928) - Run it twice from the flop
+    let h2 = parse(RIT_TWICE_FLOP_REAL);
+    assert_eq!(net_of(&h2, "f6bdaa79"), dec!(0.00));
+    assert_eq!(net_of(&h2, "7dfadc4b"), dec!(-0.41));
+    assert_eq!(net_of(&h2, "Hero"), dec!(-0.42));
+    assert_eq!(net_of(&h2, "d1a82b6a"), dec!(-0.05));
+    assert_eq!(net_of(&h2, "7e0ec17"), dec!(-0.10));
+    assert_eq!(h2.boards.len(), 2);
+    assert_eq!(board_cards(&h2.boards[0]), parse_cards("4s 3c As Kd Kc"));
+    assert_eq!(board_cards(&h2.boards[1]), parse_cards("4s 3c As Ac Qd"));
+
+    // 3. FOUR_WAY_ALL_IN (HD145383901) - Four-way all-in, one player collects twice
+    let h3 = parse(FOUR_WAY_ALL_IN);
+    assert_eq!(net_of(&h3, "c4aace87"), dec!(0.00));
+    assert_eq!(net_of(&h3, "a021b3ae"), dec!(2.27));
+    assert_eq!(net_of(&h3, "6f9cac4b"), dec!(-0.10));
+    assert_eq!(net_of(&h3, "267294a2"), dec!(0.00));
+    assert_eq!(net_of(&h3, "Hero"), dec!(-6.87));
+    assert_eq!(net_of(&h3, "6f724592"), dec!(3.65));
+    assert_eq!(h3.boards.len(), 1);
+    assert_eq!(board_cards(&h3.boards[0]), parse_cards("7d As 4c 3c 7s"));
+
+    // 4. MISSED_AND_BIG_BLIND (HD140647389) - One player posts missed blind + big blind
+    let h4 = parse(MISSED_AND_BIG_BLIND);
+    assert_eq!(net_of(&h4, "5257a38"), dec!(-0.15));
+    assert_eq!(net_of(&h4, "1fba9f17"), dec!(0.00));
+    assert_eq!(net_of(&h4, "Hero"), dec!(-0.05));
+    assert_eq!(net_of(&h4, "aa56bdcc"), dec!(0.19));
+    assert_eq!(net_of(&h4, "f0d370b7"), dec!(0.00));
+    assert_eq!(h4.boards.len(), 1);
+    assert_eq!(board_cards(&h4.boards[0]), parse_cards("Ts Ah 4s 7d"));
+
+    // 5. MISSED_AND_BIG_BLIND_2 (HD140645359) - Same, second sample
+    let h5 = parse(MISSED_AND_BIG_BLIND_2);
+    assert_eq!(net_of(&h5, "Hero"), dec!(-0.50));
+    assert_eq!(net_of(&h5, "174d6de3"), dec!(-0.05));
+    assert_eq!(net_of(&h5, "53be55c0"), dec!(0.64));
+    assert_eq!(net_of(&h5, "ed5884a"), dec!(0.00));
+    assert_eq!(net_of(&h5, "a2886689"), dec!(0.00));
+    assert_eq!(net_of(&h5, "dcd1bbfb"), dec!(-0.15));
+    assert!(h5.boards.is_empty());
+
+    // 6. MISSED_BLIND_ONLY (HD145411947) - Missed blind alone
+    let h6 = parse(MISSED_BLIND_ONLY);
+    assert_eq!(net_of(&h6, "f6bdaa79"), dec!(-0.10));
+    assert_eq!(net_of(&h6, "7dfadc4b"), dec!(7.70));
+    assert_eq!(net_of(&h6, "Hero"), dec!(0.00));
+    assert_eq!(net_of(&h6, "1105877e"), dec!(-8.49));
+    assert_eq!(net_of(&h6, "d1a82b6a"), dec!(0.00));
+    assert_eq!(net_of(&h6, "7e0ec17"), dec!(-0.05));
+    assert_eq!(h6.boards.len(), 1);
+    assert_eq!(board_cards(&h6.boards[0]), parse_cards("2d Ad 2h Ah Kc"));
+
+    // 7. MISSED_BLIND_ONLY_2 (HD140654659) - Missed blind alone, second sample
+    let h7 = parse(MISSED_BLIND_ONLY_2);
+    assert_eq!(net_of(&h7, "Hero"), dec!(-0.49));
+    assert_eq!(net_of(&h7, "8786307e"), dec!(0.00));
+    assert_eq!(net_of(&h7, "64955198"), dec!(-0.05));
+    assert_eq!(net_of(&h7, "dcc19732"), dec!(0.64));
+    assert_eq!(net_of(&h7, "32cff61e"), dec!(-0.05));
+    assert_eq!(net_of(&h7, "fe18d44c"), dec!(-0.10));
+    assert_eq!(h7.boards.len(), 1);
+    assert_eq!(board_cards(&h7.boards[0]), parse_cards("6s Kd 9d 4s 4c"));
+
+    // 8. EXTRA_BIG_BLIND (HD140653739) - Extra big blind
+    let h8 = parse(EXTRA_BIG_BLIND);
+    assert_eq!(net_of(&h8, "3c71a362"), dec!(0.00));
+    assert_eq!(net_of(&h8, "d43e85b9"), dec!(-0.05));
+    assert_eq!(net_of(&h8, "Hero"), dec!(-0.10));
+    assert_eq!(net_of(&h8, "34eb6ca7"), dec!(0.00));
+    assert_eq!(net_of(&h8, "3724b5ab"), dec!(0.00));
+    assert_eq!(net_of(&h8, "f2c7beb1"), dec!(0.14));
+    assert_eq!(h8.boards.len(), 1);
+    assert_eq!(board_cards(&h8.boards[0]), parse_cards("Qd 7h As Ad 5c"));
+
+    // 9. EXTRA_BIG_BLIND_2 (HD140653777) - Extra big blind, second sample
+    let h9 = parse(EXTRA_BIG_BLIND_2);
+    assert_eq!(net_of(&h9, "3c71a362"), dec!(0.00));
+    assert_eq!(net_of(&h9, "82ad4a3e"), dec!(0.33));
+    assert_eq!(net_of(&h9, "Hero"), dec!(0.00));
+    assert_eq!(net_of(&h9, "34eb6ca7"), dec!(-0.05));
+    assert_eq!(net_of(&h9, "3724b5ab"), dec!(-0.10));
+    assert_eq!(net_of(&h9, "f2c7beb1"), dec!(-0.20));
+    assert_eq!(h9.boards.len(), 1);
+    assert_eq!(board_cards(&h9.boards[0]), parse_cards("7s As 8d 3s"));
+
+    // 10. FOLDED_ONE_CARD_SHOW (HD145383947) - Folded one-card show plus duplicate shows
+    let h10 = parse(FOLDED_ONE_CARD_SHOW);
+    assert_eq!(net_of(&h10, "c4aace87"), dec!(0.61));
+    assert_eq!(net_of(&h10, "a021b3ae"), dec!(0.00));
+    assert_eq!(net_of(&h10, "6f9cac4b"), dec!(-0.51));
+    assert_eq!(net_of(&h10, "267294a2"), dec!(-0.05));
+    assert_eq!(net_of(&h10, "Hero"), dec!(-0.10));
+    assert_eq!(net_of(&h10, "6f724592"), dec!(0.00));
+    assert_eq!(h10.boards.len(), 1);
+    assert_eq!(board_cards(&h10.boards[0]), parse_cards("Td Ad 6d 3s 2d"));
+
+    // 11. HERO_SUMMARY_SHOW_TWO_CARDS (HD140645051) - Hero shows both cards in the summary only
+    let h11 = parse(HERO_SUMMARY_SHOW_TWO_CARDS);
+    assert_eq!(net_of(&h11, "Hero"), dec!(1.08));
+    assert_eq!(net_of(&h11, "174d6de3"), dec!(0.00));
+    assert_eq!(net_of(&h11, "53be55c0"), dec!(-0.05));
+    assert_eq!(net_of(&h11, "9b8067e5"), dec!(-0.10));
+    assert_eq!(net_of(&h11, "a2886689"), dec!(0.00));
+    assert_eq!(net_of(&h11, "dcd1bbfb"), dec!(-1.04));
+    assert_eq!(h11.boards.len(), 1);
+    assert_eq!(board_cards(&h11.boards[0]), parse_cards("6h Qd As"));
+
+    // 12. HERO_SUMMARY_SHOW_TWO_CARDS_2 (HD145383504) - Same, second sample
+    let h12 = parse(HERO_SUMMARY_SHOW_TWO_CARDS_2);
+    assert_eq!(net_of(&h12, "c4aace87"), dec!(-0.05));
+    assert_eq!(net_of(&h12, "a021b3ae"), dec!(-1.10));
+    assert_eq!(net_of(&h12, "be5746f6"), dec!(-0.50));
+    assert_eq!(net_of(&h12, "2ee85b67"), dec!(0.00));
+    assert_eq!(net_of(&h12, "Hero"), dec!(1.90));
+    assert_eq!(net_of(&h12, "6f724592"), dec!(-0.50));
+    assert_eq!(h12.boards.len(), 1);
+    assert_eq!(board_cards(&h12.boards[0]), parse_cards("8h 4c 9h 5d Ah"));
 }
 
 // ---------------------------------------------------------------------------------------------
