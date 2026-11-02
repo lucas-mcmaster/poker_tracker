@@ -776,12 +776,21 @@ fn validate_betting(hand: &CanonicalHand) -> Result<(), ParseError> {
     let is_post = |t: ActionType| {
         matches!(
             t,
+            ActionType::PostSmallBlind
+                | ActionType::PostBigBlind
+                | ActionType::PostDeadBlind
+                | ActionType::PostStraddle
+        )
+    };
+    let is_blind = |t: ActionType| {
+        matches!(
+            t,
             ActionType::PostSmallBlind | ActionType::PostBigBlind | ActionType::PostDeadBlind
         )
     };
     let (small_blind, big_blind) = (hand.header.small_blind, hand.header.big_blind);
 
-    // Blinds lead the hand and match the stakes.
+    // Forced posts lead the hand and match the stakes.
     let posts = hand
         .actions
         .iter()
@@ -793,7 +802,7 @@ fn validate_betting(hand: &CanonicalHand) -> Result<(), ParseError> {
         .skip(posts)
         .any(|a| is_post(a.action_type))
     {
-        return Err(violation(hand, "blind posted after the betting started"));
+        return Err(violation(hand, "forced post after the betting started"));
     }
     let posted = hand.actions.get(..posts).unwrap_or(&[]);
     if posted
@@ -804,35 +813,102 @@ fn validate_betting(hand: &CanonicalHand) -> Result<(), ParseError> {
     {
         return Err(violation(hand, "more than one small blind"));
     }
+    let Some(first_big_blind_idx) = posted
+        .iter()
+        .position(|a| a.action_type == ActionType::PostBigBlind)
+    else {
+        return Err(violation(hand, "no big blind posted"));
+    };
+    if posted[..first_big_blind_idx]
+        .iter()
+        .any(|a| a.action_type == ActionType::PostStraddle)
+    {
+        return Err(violation(hand, "straddle before big blind"));
+    }
+    if let Some(first_straddle_idx) = posted
+        .iter()
+        .position(|a| a.action_type == ActionType::PostStraddle)
+        && posted[first_straddle_idx..]
+            .iter()
+            .any(|a| is_blind(a.action_type))
+    {
+        return Err(violation(hand, "blind posted after a straddle"));
+    }
+    let straddle_count = posted
+        .iter()
+        .filter(|a| a.action_type == ActionType::PostStraddle)
+        .count();
+    if straddle_count > 2 {
+        return Err(violation(hand, "more than two straddles"));
+    }
+
+    let first_big_blind = &posted[first_big_blind_idx];
+    let big_blind_seat = seat(&first_big_blind.player_name)?;
+
+    let last_straddle = posted
+        .iter()
+        .rev()
+        .find(|a| a.action_type == ActionType::PostStraddle);
+    let straddle_anchor = match last_straddle {
+        Some(s) => Some(seat(&s.player_name)?),
+        None => None,
+    };
+
+    let mut posted_commitments: HashMap<u8, Decimal> = HashMap::new();
     for a in posted {
+        let s = seat(&a.player_name)?;
+        let current = posted_commitments.get(&s).copied().unwrap_or(Decimal::ZERO);
         let size_ok = match a.action_type {
             ActionType::PostSmallBlind => {
-                a.amount == small_blind || (a.is_all_in && a.amount < small_blind)
+                (a.amount == small_blind || (a.is_all_in && a.amount < small_blind))
+                    && a.street_total_after
+                        == current.checked_add(a.amount).unwrap_or(Decimal::ZERO)
             }
             ActionType::PostBigBlind => {
-                a.amount == big_blind || (a.is_all_in && a.amount < big_blind)
+                (a.amount == big_blind || (a.is_all_in && a.amount < big_blind))
+                    && a.street_total_after
+                        == current.checked_add(a.amount).unwrap_or(Decimal::ZERO)
             }
-            _ => a.amount <= big_blind,
+            ActionType::PostDeadBlind => a.amount <= big_blind && a.street_total_after == current,
+            ActionType::PostStraddle => {
+                let highest_live = posted_commitments
+                    .values()
+                    .copied()
+                    .max()
+                    .unwrap_or(Decimal::ZERO);
+                let expected = highest_live
+                    .checked_mul(Decimal::from(2))
+                    .ok_or_else(|| violation(hand, "straddle sizing overflow"))?;
+                (a.street_total_after == expected
+                    || (a.is_all_in && a.street_total_after < expected))
+                    && a.amount > Decimal::ZERO
+                    && a.street_total_after
+                        == current.checked_add(a.amount).unwrap_or(Decimal::ZERO)
+            }
+            _ => false,
         };
         if !size_ok {
-            return Err(violation(
-                hand,
+            let msg = if a.action_type == ActionType::PostStraddle {
+                format!(
+                    "{} of {} by '{}' does not match required size",
+                    a.action_type.as_str(),
+                    a.amount,
+                    a.player_name
+                )
+            } else {
                 format!(
                     "{} of {} by '{}' does not match the {small_blind}/{big_blind} stakes",
                     a.action_type.as_str(),
                     a.amount,
                     a.player_name
-                ),
-            ));
+                )
+            };
+            return Err(violation(hand, msg));
+        }
+        if a.action_type.adds_to_street_commitment() {
+            posted_commitments.insert(s, a.street_total_after);
         }
     }
-    let Some(first_big_blind) = posted
-        .iter()
-        .find(|a| a.action_type == ActionType::PostBigBlind)
-    else {
-        return Err(violation(hand, "no big blind posted"));
-    };
-    let big_blind_seat = seat(&first_big_blind.player_name)?;
 
     let mut state = BettingState {
         folded: HashSet::new(),
@@ -883,10 +959,16 @@ fn validate_betting(hand: &CanonicalHand) -> Result<(), ParseError> {
             .collect();
         // Players who already acted voluntarily on this street (posting a blind is not acting).
         let mut acted: HashSet<u8> = HashSet::new();
-        // Size of the last full bet or raise; the minimum bet is the big blind.
-        let mut min_raise = big_blind;
+        // Size of the last full bet or raise; the minimum bet is the big blind (or straddle).
+        let mut min_raise = if street == Street::Preflop {
+            last_straddle
+                .map(|s| s.street_total_after)
+                .unwrap_or(big_blind)
+        } else {
+            big_blind
+        };
         let mut anchor = if street == Street::Preflop {
-            big_blind_seat
+            straddle_anchor.unwrap_or(big_blind_seat)
         } else {
             hand.header.button_seat
         };
@@ -1804,6 +1886,119 @@ mod tests {
             let h = scenario(&stacks, 3, &steps, 3, &winners);
             assert!(betting_error(&h).contains("more than the 0.60 they could win"));
         }
+    }
+
+    #[test]
+    fn straddle_validator_rules() {
+        use ActionType::*;
+        use Street::*;
+        let stacks = [("A", TEN), ("B", TEN), ("C", TEN), ("Hero", TEN)];
+
+        // 1. Anchor shift: with C straddling, Hero (seat 4) must act first preflop.
+        // If A acts before Hero, it is out of turn.
+        let out_of_turn = [
+            (Preflop, "A", PostSmallBlind, dec!(0.05)),
+            (Preflop, "B", PostBigBlind, dec!(0.1)),
+            (Preflop, "C", PostStraddle, dec!(0.2)),
+            (Preflop, "A", Fold, dec!(0)), // A acts out of turn; Hero should act first
+        ];
+        let h = scenario(&stacks, 4, &out_of_turn, 0, &[("C", dec!(0.35))]);
+        assert!(betting_error(&h).contains("acts out of turn on the Preflop"));
+
+        // Valid order: Hero -> A -> B -> C (straddler checks their option)
+        let valid_option_check = [
+            (Preflop, "A", PostSmallBlind, dec!(0.05)),
+            (Preflop, "B", PostBigBlind, dec!(0.1)),
+            (Preflop, "C", PostStraddle, dec!(0.2)),
+            (Preflop, "Hero", Fold, dec!(0)),
+            (Preflop, "A", Fold, dec!(0)),
+            (Preflop, "B", Call, dec!(0.1)),
+            (Preflop, "C", Check, dec!(0)),
+            (Flop, "B", Check, dec!(0)),
+            (Flop, "C", Bet, dec!(0.2)),
+            (Flop, "B", Fold, dec!(0)),
+            (Flop, "C", UncalledBetReturned, dec!(0.2)),
+        ];
+        let h = scenario(&stacks, 4, &valid_option_check, 1, &[("C", dec!(0.45))]);
+        validate_hand(&h).unwrap();
+
+        // 2. Straddler option: if C raises instead of checking, it is legal.
+        let valid_option_raise = [
+            (Preflop, "A", PostSmallBlind, dec!(0.05)),
+            (Preflop, "B", PostBigBlind, dec!(0.1)),
+            (Preflop, "C", PostStraddle, dec!(0.2)),
+            (Preflop, "Hero", Fold, dec!(0)),
+            (Preflop, "A", Fold, dec!(0)),
+            (Preflop, "B", Call, dec!(0.1)),
+            (Preflop, "C", Raise, dec!(0.6)), // C exercises option by raising to 0.60
+            (Preflop, "B", Fold, dec!(0)),
+            (Preflop, "C", UncalledBetReturned, dec!(0.4)),
+        ];
+        let h = scenario(&stacks, 4, &valid_option_raise, 0, &[("C", dec!(0.45))]);
+        validate_hand(&h).unwrap();
+
+        // If C's option is omitted (round ends before C acts), betting ends early.
+        let omitted_option = [
+            (Preflop, "A", PostSmallBlind, dec!(0.05)),
+            (Preflop, "B", PostBigBlind, dec!(0.1)),
+            (Preflop, "C", PostStraddle, dec!(0.2)),
+            (Preflop, "Hero", Fold, dec!(0)),
+            (Preflop, "A", Fold, dec!(0)),
+            (Preflop, "B", Call, dec!(0.1)),
+            (Flop, "B", Check, dec!(0)),
+        ];
+        let h = scenario(&stacks, 4, &omitted_option, 1, &[("B", dec!(0.45))]);
+        assert!(betting_error(&h).contains("the Preflop betting ended before 1 player(s) acted"));
+
+        // 3. 2x size requirement: straddle must be exactly 2x highest previous live commitment.
+        let wrong_size = [
+            (Preflop, "A", PostSmallBlind, dec!(0.05)),
+            (Preflop, "B", PostBigBlind, dec!(0.1)),
+            (Preflop, "C", PostStraddle, dec!(0.3)), // 0.3 != 2 * 0.1
+        ];
+        let h = scenario(&stacks, 4, &wrong_size, 0, &[("C", dec!(0.45))]);
+        assert!(
+            betting_error(&h).contains("PostStraddle of 0.3 by 'C' does not match required size")
+        );
+
+        // 4. Maximum of 2 straddles: a 3rd straddle is rejected.
+        let stacks5 = [
+            ("A", TEN),
+            ("B", TEN),
+            ("C", TEN),
+            ("D", TEN),
+            ("Hero", TEN),
+        ];
+        let three_straddles = [
+            (Preflop, "A", PostSmallBlind, dec!(0.05)),
+            (Preflop, "B", PostBigBlind, dec!(0.1)),
+            (Preflop, "C", PostStraddle, dec!(0.2)),
+            (Preflop, "D", PostStraddle, dec!(0.4)),
+            (Preflop, "Hero", PostStraddle, dec!(0.8)),
+        ];
+        let h = scenario(&stacks5, 5, &three_straddles, 0, &[("Hero", dec!(1.55))]);
+        assert!(betting_error(&h).contains("more than two straddles"));
+
+        // 5. Minimum raise over a straddle: over 0.20, min raise is to 0.40 (raising to 0.30 is illegal).
+        let small_raise = [
+            (Preflop, "A", PostSmallBlind, dec!(0.05)),
+            (Preflop, "B", PostBigBlind, dec!(0.1)),
+            (Preflop, "C", PostStraddle, dec!(0.2)),
+            (Preflop, "Hero", Raise, dec!(0.3)), // Min raise is to 0.40!
+        ];
+        let h = scenario(&stacks, 4, &small_raise, 0, &[("Hero", dec!(0.65))]);
+        assert!(betting_error(&h).contains("illegal Raise to 0.3"));
+
+        // Over double straddle (0.20 then 0.40), min raise is to 0.80 (raising to 0.70 is illegal).
+        let small_double_raise = [
+            (Preflop, "A", PostSmallBlind, dec!(0.05)),
+            (Preflop, "B", PostBigBlind, dec!(0.1)),
+            (Preflop, "C", PostStraddle, dec!(0.2)),
+            (Preflop, "D", PostStraddle, dec!(0.4)),
+            (Preflop, "Hero", Raise, dec!(0.7)), // Min raise is to 0.80!
+        ];
+        let h = scenario(&stacks5, 5, &small_double_raise, 0, &[("Hero", dec!(1.45))]);
+        assert!(betting_error(&h).contains("illegal Raise to 0.7"));
     }
 
     #[test]

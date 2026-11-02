@@ -88,6 +88,14 @@ static RE_POST: LazyLock<Regex> = LazyLock::new(|| {
     ))
 });
 
+static RE_STRADDLE: LazyLock<Regex> = LazyLock::new(|| {
+    compile_static_regex(concat!(
+        r"^(?P<name>.+?): straddle \$(?P<amt>",
+        amt!(),
+        r")$"
+    ))
+});
+
 static RE_FOLD_CHECK: LazyLock<Regex> =
     LazyLock::new(|| compile_static_regex(r"^(?P<name>.+?): (?P<verb>folds|checks)$"));
 
@@ -496,67 +504,160 @@ impl HandState {
         Ok(())
     }
 
-    /// Handles a line between the seat list and `*** HOLE CARDS ***`: only blind posts.
+    /// Handles a line between the seat list and `*** HOLE CARDS ***`: blind posts and straddles.
     fn apply_blind_line(&mut self, line_idx: usize, line: &str) -> Result<(), ParseError> {
-        let Some(caps) = RE_POST.captures(line) else {
-            return Err(ParseError::UnrecognizedLine {
-                line: line_idx,
-                content: line.to_string(),
-            });
+        let unrecognized = || ParseError::UnrecognizedLine {
+            line: line_idx,
+            content: line.to_string(),
         };
-        let name = cap(&caps, "name");
-        self.ensure_seated(name)?;
-        let amount = parse_decimal(cap(&caps, "amt"))?;
-        if amount <= Decimal::ZERO {
-            return Err(ParseError::IllegalAction {
-                line: line_idx,
-                content: line.to_string(),
-                reason: "amount must be positive".to_string(),
-            });
-        }
-        let current = self
-            .street_commitments
-            .get(name)
-            .copied()
-            .unwrap_or(Decimal::ZERO);
-        // GGPoker prints the small blind first, then the big blind(s) and any missed blinds.
-        if cap(&caps, "kind") == "small blind" && !self.actions.is_empty() {
-            return Err(ParseError::UnrecognizedLine {
-                line: line_idx,
-                content: line.to_string(),
-            });
-        }
-        let (action_type, total_after) = match cap(&caps, "kind") {
-            "small blind" => (ActionType::PostSmallBlind, current.checked_add(amount)),
-            "big blind" => (ActionType::PostBigBlind, current.checked_add(amount)),
-            _ => (ActionType::PostDeadBlind, Some(current)),
-        };
-        let total_after = total_after.ok_or_else(|| ParseError::InvalidAmount {
-            raw: line.to_string(),
-        })?;
-        // GGPoker prints no "and is all-in" on a blind; a post of the whole stack is one.
-        let posted_before = self
-            .actions
-            .iter()
-            .filter(|a| a.player_name == name)
-            .try_fold(Decimal::ZERO, |acc, a| acc.checked_add(a.amount))
-            .ok_or_else(|| ParseError::InvalidAmount {
+
+        if let Some(caps) = RE_POST.captures(line) {
+            // Reject any blind post that appears after a straddle
+            if self
+                .actions
+                .iter()
+                .any(|a| a.action_type == ActionType::PostStraddle)
+            {
+                return Err(unrecognized());
+            }
+            let name = cap(&caps, "name");
+            self.ensure_seated(name)?;
+            let amount = parse_decimal(cap(&caps, "amt"))?;
+            if amount <= Decimal::ZERO {
+                return Err(ParseError::IllegalAction {
+                    line: line_idx,
+                    content: line.to_string(),
+                    reason: "amount must be positive".to_string(),
+                });
+            }
+            let current = self
+                .street_commitments
+                .get(name)
+                .copied()
+                .unwrap_or(Decimal::ZERO);
+            // GGPoker prints the small blind first, then the big blind(s) and any missed blinds.
+            if cap(&caps, "kind") == "small blind" && !self.actions.is_empty() {
+                return Err(unrecognized());
+            }
+            let (action_type, total_after) = match cap(&caps, "kind") {
+                "small blind" => (ActionType::PostSmallBlind, current.checked_add(amount)),
+                "big blind" => (ActionType::PostBigBlind, current.checked_add(amount)),
+                _ => (ActionType::PostDeadBlind, Some(current)),
+            };
+            let total_after = total_after.ok_or_else(|| ParseError::InvalidAmount {
                 raw: line.to_string(),
             })?;
-        let is_all_in = self
-            .players
-            .iter()
-            .any(|p| p.name == name && posted_before.checked_add(amount) == Some(p.starting_stack));
-        self.street_commitments
-            .insert(name.to_string(), total_after);
-        self.push_action(
-            Street::Preflop,
-            name,
-            action_type,
-            amount,
-            total_after,
-            is_all_in,
-        )
+            // GGPoker prints no "and is all-in" on a blind; a post of the whole stack is one.
+            let posted_before = self
+                .actions
+                .iter()
+                .filter(|a| a.player_name == name)
+                .try_fold(Decimal::ZERO, |acc, a| acc.checked_add(a.amount))
+                .ok_or_else(|| ParseError::InvalidAmount {
+                    raw: line.to_string(),
+                })?;
+            let is_all_in = self.players.iter().any(|p| {
+                p.name == name && posted_before.checked_add(amount) == Some(p.starting_stack)
+            });
+            self.street_commitments
+                .insert(name.to_string(), total_after);
+            return self.push_action(
+                Street::Preflop,
+                name,
+                action_type,
+                amount,
+                total_after,
+                is_all_in,
+            );
+        }
+
+        if let Some(caps) = RE_STRADDLE.captures(line) {
+            // Must appear after at least one PostBigBlind action
+            if !self
+                .actions
+                .iter()
+                .any(|a| a.action_type == ActionType::PostBigBlind)
+            {
+                return Err(unrecognized());
+            }
+            // Reject if 2 PostStraddle actions have already been recorded in the hand
+            let straddles_count = self
+                .actions
+                .iter()
+                .filter(|a| a.action_type == ActionType::PostStraddle)
+                .count();
+            if straddles_count >= 2 {
+                return Err(ParseError::IllegalAction {
+                    line: line_idx,
+                    content: line.to_string(),
+                    reason: "at most two straddles allowed".to_string(),
+                });
+            }
+            let name = cap(&caps, "name");
+            self.ensure_seated(name)?;
+            let total_after = parse_decimal(cap(&caps, "amt"))?;
+            let current = self
+                .street_commitments
+                .get(name)
+                .copied()
+                .unwrap_or(Decimal::ZERO);
+            let increment =
+                total_after
+                    .checked_sub(current)
+                    .ok_or_else(|| ParseError::InvalidAmount {
+                        raw: line.to_string(),
+                    })?;
+            if increment <= Decimal::ZERO {
+                return Err(ParseError::IllegalAction {
+                    line: line_idx,
+                    content: line.to_string(),
+                    reason: "straddle increment must be positive".to_string(),
+                });
+            }
+            let max_before = self
+                .street_commitments
+                .values()
+                .copied()
+                .max()
+                .unwrap_or(Decimal::ZERO);
+            let expected = max_before.checked_mul(Decimal::from(2)).ok_or_else(|| {
+                ParseError::InvalidAmount {
+                    raw: line.to_string(),
+                }
+            })?;
+            if total_after != expected {
+                return Err(ParseError::IllegalAction {
+                    line: line_idx,
+                    content: line.to_string(),
+                    reason: format!(
+                        "straddle must be 2x highest previous commitment {max_before}, expected {expected} but got {total_after}"
+                    ),
+                });
+            }
+            let posted_before = self
+                .actions
+                .iter()
+                .filter(|a| a.player_name == name)
+                .try_fold(Decimal::ZERO, |acc, a| acc.checked_add(a.amount))
+                .ok_or_else(|| ParseError::InvalidAmount {
+                    raw: line.to_string(),
+                })?;
+            let is_all_in = self.players.iter().any(|p| {
+                p.name == name && posted_before.checked_add(increment) == Some(p.starting_stack)
+            });
+            self.street_commitments
+                .insert(name.to_string(), total_after);
+            return self.push_action(
+                Street::Preflop,
+                name,
+                ActionType::PostStraddle,
+                increment,
+                total_after,
+                is_all_in,
+            );
+        }
+
+        Err(unrecognized())
     }
 
     /// Handles a line inside a betting street (after `*** HOLE CARDS ***`).
@@ -638,8 +739,8 @@ impl HandState {
             return Ok(());
         }
 
-        if RE_POST.is_match(line) {
-            return Err(illegal("blind posted after hole cards were dealt"));
+        if RE_POST.is_match(line) || RE_STRADDLE.is_match(line) {
+            return Err(illegal("forced post after hole cards were dealt"));
         }
 
         let (name, action_type, amounts, is_all_in) = if let Some(caps) = RE_RAISE.captures(line) {

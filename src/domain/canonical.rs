@@ -166,6 +166,8 @@ pub enum ActionType {
     /// Dead money (e.g. a missed small blind): enters the pot but does not count toward the
     /// poster's street commitment.
     PostDeadBlind,
+    /// Live straddle (counts toward the poster's street commitment).
+    PostStraddle,
     Fold,
     Check,
     Call,
@@ -182,6 +184,7 @@ impl ActionType {
             Self::PostSmallBlind => "PostSmallBlind",
             Self::PostBigBlind => "PostBigBlind",
             Self::PostDeadBlind => "PostDeadBlind",
+            Self::PostStraddle => "PostStraddle",
             Self::Fold => "Fold",
             Self::Check => "Check",
             Self::Call => "Call",
@@ -199,6 +202,7 @@ impl ActionType {
             Self::PostSmallBlind
                 | Self::PostBigBlind
                 | Self::PostDeadBlind
+                | Self::PostStraddle
                 | Self::Call
                 | Self::Bet
                 | Self::Raise
@@ -210,7 +214,12 @@ impl ActionType {
     pub const fn adds_to_street_commitment(self) -> bool {
         matches!(
             self,
-            Self::PostSmallBlind | Self::PostBigBlind | Self::Call | Self::Bet | Self::Raise
+            Self::PostSmallBlind
+                | Self::PostBigBlind
+                | Self::PostStraddle
+                | Self::Call
+                | Self::Bet
+                | Self::Raise
         )
     }
 }
@@ -222,6 +231,7 @@ stored_identifier!(
         PostSmallBlind,
         PostBigBlind,
         PostDeadBlind,
+        PostStraddle,
         Fold,
         Check,
         Call,
@@ -603,7 +613,7 @@ mod tests {
         assert_eq!(round_trip(Platform::ALL, Platform::as_str), 1);
         assert_eq!(round_trip(GameType::ALL, GameType::as_str), 1);
         assert_eq!(round_trip(BettingLimit::ALL, BettingLimit::as_str), 1);
-        assert_eq!(round_trip(ActionType::ALL, ActionType::as_str), 9);
+        assert_eq!(round_trip(ActionType::ALL, ActionType::as_str), 10);
         assert_eq!(round_trip(DeductionKind::ALL, DeductionKind::as_str), 3);
         assert_eq!(round_trip(AdjustmentKind::ALL, AdjustmentKind::as_str), 1);
         for code in 0..=4 {

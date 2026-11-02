@@ -12,9 +12,10 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
 use common::{
-    BODY_AND_SUMMARY_ONE_CARD, DEAD_MISSED_BLIND, EV_CASHOUT, FIXTURE_CURRENCY,
+    BODY_AND_SUMMARY_ONE_CARD, DEAD_MISSED_BLIND, DOUBLE_STRADDLE, EV_CASHOUT, FIXTURE_CURRENCY,
     HERO_SUMMARY_SHOW_ONE_CARD, HU_FLOP, HU_PREFLOP_FOLD, HU_SHOWDOWN, ONE_CARD_SHOW_AFTER_FOLD,
-    RIT_THREE_TIMES_PREFLOP, RIT_TWICE_FLOP_ALL_IN, SAMPLE_SESSION, SUMMARY_SHOW_COLLECTED,
+    RIT_THREE_TIMES_PREFLOP, RIT_TWICE_FLOP_ALL_IN, SAMPLE_SESSION, STRADDLE_BB_WALK,
+    STRADDLE_BUTTON, STRADDLE_SB_ALL_IN_POT, STRADDLE_UTG_OPTION, SUMMARY_SHOW_COLLECTED,
     SUMMARY_SHOW_ONE_CARD, SUMMARY_SHOW_TWO_CARDS, THREE_WAY_ALL_IN_SIDE_POT,
     UNCALLED_ALL_IN_SPLIT, WALK, gg,
 };
@@ -623,6 +624,214 @@ fn uncontested_summary_shows_refusals() {
 }
 
 #[test]
+fn straddle_hands_parse_actions_and_nets() {
+    let check_actions =
+        |hand: &CanonicalHand, expected: &[(&str, ActionType, Decimal, Decimal)]| {
+            assert_eq!(hand.actions.len(), expected.len(), "action count mismatch");
+            for (i, (act, (name, atype, amt, total))) in
+                hand.actions.iter().zip(expected.iter()).enumerate()
+            {
+                assert_eq!(
+                    (
+                        act.player_name.as_str(),
+                        act.action_type,
+                        act.amount,
+                        act.street_total_after
+                    ),
+                    (*name, *atype, *amt, *total),
+                    "action {i} mismatch"
+                );
+            }
+        };
+
+    // 1. STRADDLE_UTG_OPTION (HD145385563)
+    let h1 = parse(STRADDLE_UTG_OPTION);
+    check_actions(
+        &h1,
+        &[
+            (
+                "494b476f",
+                ActionType::PostSmallBlind,
+                dec!(0.05),
+                dec!(0.05),
+            ),
+            ("c89b4da3", ActionType::PostBigBlind, dec!(0.1), dec!(0.1)),
+            ("5daacec9", ActionType::PostStraddle, dec!(0.2), dec!(0.2)),
+            ("adbf678c", ActionType::Call, dec!(0.2), dec!(0.2)),
+            ("Hero", ActionType::Fold, dec!(0), dec!(0)),
+            ("4e268376", ActionType::Fold, dec!(0), dec!(0)),
+            ("494b476f", ActionType::Fold, dec!(0), dec!(0.05)),
+            ("c89b4da3", ActionType::Fold, dec!(0), dec!(0.1)),
+            ("5daacec9", ActionType::Check, dec!(0), dec!(0.2)),
+            ("5daacec9", ActionType::Bet, dec!(0.19), dec!(0.19)),
+            ("adbf678c", ActionType::Raise, dec!(0.82), dec!(0.82)),
+            ("5daacec9", ActionType::Fold, dec!(0), dec!(0.19)),
+            (
+                "adbf678c",
+                ActionType::UncalledBetReturned,
+                dec!(0.63),
+                dec!(0.19),
+            ),
+        ],
+    );
+    assert_eq!(net_of(&h1, "494b476f"), dec!(-0.05));
+    assert_eq!(net_of(&h1, "c89b4da3"), dec!(-0.10));
+    assert_eq!(net_of(&h1, "5daacec9"), dec!(-0.39));
+    assert_eq!(net_of(&h1, "adbf678c"), dec!(0.50));
+    assert_eq!(net_of(&h1, "Hero"), dec!(0.00));
+    assert_eq!(net_of(&h1, "4e268376"), dec!(0.00));
+
+    // 2. STRADDLE_SB_ALL_IN_POT (HD145385586)
+    let h2 = parse(STRADDLE_SB_ALL_IN_POT);
+    check_actions(
+        &h2,
+        &[
+            (
+                "5daacec9",
+                ActionType::PostSmallBlind,
+                dec!(0.05),
+                dec!(0.05),
+            ),
+            ("adbf678c", ActionType::PostBigBlind, dec!(0.1), dec!(0.1)),
+            ("5daacec9", ActionType::PostStraddle, dec!(0.15), dec!(0.2)),
+            ("adbf678c", ActionType::Call, dec!(0.1), dec!(0.2)),
+            ("Hero", ActionType::Fold, dec!(0), dec!(0)),
+            ("4e268376", ActionType::Raise, dec!(0.75), dec!(0.75)),
+            ("494b476f", ActionType::Fold, dec!(0), dec!(0)),
+            ("c89b4da3", ActionType::Fold, dec!(0), dec!(0)),
+            ("5daacec9", ActionType::Call, dec!(0.55), dec!(0.75)),
+            ("adbf678c", ActionType::Fold, dec!(0), dec!(0.2)),
+            ("5daacec9", ActionType::Check, dec!(0), dec!(0)),
+            ("4e268376", ActionType::Bet, dec!(1.15), dec!(1.15)),
+            ("5daacec9", ActionType::Call, dec!(1.15), dec!(1.15)),
+            ("5daacec9", ActionType::Check, dec!(0), dec!(0)),
+            ("4e268376", ActionType::Bet, dec!(2.65), dec!(2.65)),
+            ("5daacec9", ActionType::Raise, dec!(11.15), dec!(11.15)),
+            ("4e268376", ActionType::Call, dec!(8.5), dec!(11.15)),
+        ],
+    );
+    assert_eq!(h2.actions[15].is_all_in, true);
+    assert_eq!(net_of(&h2, "494b476f"), dec!(0.00));
+    assert_eq!(net_of(&h2, "c89b4da3"), dec!(0.00));
+    assert_eq!(net_of(&h2, "5daacec9"), dec!(12.15));
+    assert_eq!(net_of(&h2, "adbf678c"), dec!(-0.20));
+    assert_eq!(net_of(&h2, "Hero"), dec!(0.00));
+    assert_eq!(net_of(&h2, "4e268376"), dec!(-13.05));
+
+    // 3. STRADDLE_BB_WALK (HD145385508)
+    let h3 = parse(STRADDLE_BB_WALK);
+    check_actions(
+        &h3,
+        &[
+            (
+                "c89b4da3",
+                ActionType::PostSmallBlind,
+                dec!(0.05),
+                dec!(0.05),
+            ),
+            ("5daacec9", ActionType::PostBigBlind, dec!(0.1), dec!(0.1)),
+            ("5daacec9", ActionType::PostStraddle, dec!(0.1), dec!(0.2)),
+            ("adbf678c", ActionType::Fold, dec!(0), dec!(0)),
+            ("Hero", ActionType::Fold, dec!(0), dec!(0)),
+            ("4e268376", ActionType::Fold, dec!(0), dec!(0)),
+            ("494b476f", ActionType::Fold, dec!(0), dec!(0)),
+            ("c89b4da3", ActionType::Fold, dec!(0), dec!(0.05)),
+            (
+                "5daacec9",
+                ActionType::UncalledBetReturned,
+                dec!(0.15),
+                dec!(0.05),
+            ),
+        ],
+    );
+    assert_eq!(net_of(&h3, "494b476f"), dec!(0.00));
+    assert_eq!(net_of(&h3, "c89b4da3"), dec!(-0.05));
+    assert_eq!(net_of(&h3, "5daacec9"), dec!(0.05));
+    assert_eq!(net_of(&h3, "adbf678c"), dec!(0.00));
+    assert_eq!(net_of(&h3, "Hero"), dec!(0.00));
+    assert_eq!(net_of(&h3, "4e268376"), dec!(0.00));
+
+    // 4. STRADDLE_BUTTON (HD145385522)
+    let h4 = parse(STRADDLE_BUTTON);
+    check_actions(
+        &h4,
+        &[
+            (
+                "adbf678c",
+                ActionType::PostSmallBlind,
+                dec!(0.05),
+                dec!(0.05),
+            ),
+            ("Hero", ActionType::PostBigBlind, dec!(0.1), dec!(0.1)),
+            ("5daacec9", ActionType::PostStraddle, dec!(0.2), dec!(0.2)),
+            ("adbf678c", ActionType::Raise, dec!(0.41), dec!(0.46)),
+            ("Hero", ActionType::Fold, dec!(0), dec!(0.1)),
+            ("4e268376", ActionType::Fold, dec!(0), dec!(0)),
+            ("494b476f", ActionType::Call, dec!(0.46), dec!(0.46)),
+            ("c89b4da3", ActionType::Call, dec!(0.46), dec!(0.46)),
+            ("5daacec9", ActionType::Call, dec!(0.26), dec!(0.46)),
+            ("adbf678c", ActionType::Check, dec!(0), dec!(0)),
+            ("494b476f", ActionType::Check, dec!(0), dec!(0)),
+            ("c89b4da3", ActionType::Check, dec!(0), dec!(0)),
+            ("5daacec9", ActionType::Check, dec!(0), dec!(0)),
+            ("adbf678c", ActionType::Bet, dec!(1.3), dec!(1.3)),
+            ("494b476f", ActionType::Fold, dec!(0), dec!(0)),
+            ("c89b4da3", ActionType::Fold, dec!(0), dec!(0)),
+            ("5daacec9", ActionType::Fold, dec!(0), dec!(0)),
+            (
+                "adbf678c",
+                ActionType::UncalledBetReturned,
+                dec!(1.3),
+                dec!(0),
+            ),
+        ],
+    );
+    assert_eq!(net_of(&h4, "494b476f"), dec!(-0.46));
+    assert_eq!(net_of(&h4, "c89b4da3"), dec!(-0.46));
+    assert_eq!(net_of(&h4, "5daacec9"), dec!(-0.46));
+    assert_eq!(net_of(&h4, "adbf678c"), dec!(1.39));
+    assert_eq!(net_of(&h4, "Hero"), dec!(-0.10));
+    assert_eq!(net_of(&h4, "4e268376"), dec!(0.00));
+
+    // 5. DOUBLE_STRADDLE (HD145385574)
+    let h5 = parse(DOUBLE_STRADDLE);
+    check_actions(
+        &h5,
+        &[
+            (
+                "c89b4da3",
+                ActionType::PostSmallBlind,
+                dec!(0.05),
+                dec!(0.05),
+            ),
+            ("5daacec9", ActionType::PostBigBlind, dec!(0.1), dec!(0.1)),
+            ("5daacec9", ActionType::PostStraddle, dec!(0.1), dec!(0.2)),
+            ("494b476f", ActionType::PostStraddle, dec!(0.4), dec!(0.4)),
+            ("c89b4da3", ActionType::Fold, dec!(0), dec!(0.05)),
+            ("5daacec9", ActionType::Call, dec!(0.2), dec!(0.4)),
+            ("adbf678c", ActionType::Call, dec!(0.4), dec!(0.4)),
+            ("Hero", ActionType::Raise, dec!(1.8), dec!(1.8)),
+            ("4e268376", ActionType::Fold, dec!(0), dec!(0)),
+            ("494b476f", ActionType::Fold, dec!(0), dec!(0.4)),
+            ("5daacec9", ActionType::Fold, dec!(0), dec!(0.4)),
+            ("adbf678c", ActionType::Fold, dec!(0), dec!(0.4)),
+            (
+                "Hero",
+                ActionType::UncalledBetReturned,
+                dec!(1.4),
+                dec!(0.4),
+            ),
+        ],
+    );
+    assert_eq!(net_of(&h5, "494b476f"), dec!(-0.40));
+    assert_eq!(net_of(&h5, "c89b4da3"), dec!(-0.05));
+    assert_eq!(net_of(&h5, "5daacec9"), dec!(-0.40));
+    assert_eq!(net_of(&h5, "adbf678c"), dec!(-0.40));
+    assert_eq!(net_of(&h5, "Hero"), dec!(1.17));
+    assert_eq!(net_of(&h5, "4e268376"), dec!(0.00));
+}
+
+#[test]
 fn walk_returns_small_blind_and_awards_big_blind() {
     let h = parse(WALK);
     assert!(h.boards.is_empty());
@@ -1114,5 +1323,86 @@ fn rejects_blinds_and_payouts_the_stakes_and_side_pots_do_not_allow() {
     assert!(matches!(
         parse_err(&bad),
         ParseError::InvariantViolation { ref detail, .. } if detail.contains("could win")
+    ));
+}
+
+#[test]
+fn straddle_refusal_tests() {
+    // 1. straddle $0.3 (not 2x)
+    let not_2x = STRADDLE_UTG_OPTION.replace("5daacec9: straddle $0.2", "5daacec9: straddle $0.3");
+    assert!(matches!(
+        parse_err(&not_2x),
+        ParseError::IllegalAction { ref reason, .. } if reason.contains("2x highest previous commitment")
+    ));
+
+    // 2. A third straddle (straddle $0.8 added after straddle $0.4 in DOUBLE_STRADDLE)
+    let third_straddle = DOUBLE_STRADDLE.replace(
+        "494b476f: straddle $0.4\n",
+        "494b476f: straddle $0.4\nadbf678c: straddle $0.8\n",
+    );
+    assert!(matches!(
+        parse_err(&third_straddle),
+        ParseError::IllegalAction { ref reason, .. } if reason.contains("at most two straddles")
+    ));
+
+    // 3a. Straddle moved after *** HOLE CARDS ***
+    let straddle_after_hole_cards = STRADDLE_UTG_OPTION
+        .replace("5daacec9: straddle $0.2\n", "")
+        .replace(
+            "*** HOLE CARDS ***\n",
+            "*** HOLE CARDS ***\n5daacec9: straddle $0.2\n",
+        );
+    assert!(matches!(
+        parse_err(&straddle_after_hole_cards),
+        ParseError::IllegalAction { ref reason, .. } if reason.contains("forced post after hole cards")
+    ));
+
+    // 3b. Straddle moved before blinds
+    let straddle_before_blinds = STRADDLE_UTG_OPTION
+        .replace("5daacec9: straddle $0.2\n", "")
+        .replace(
+            "494b476f: posts small blind $0.05\n",
+            "5daacec9: straddle $0.2\n494b476f: posts small blind $0.05\n",
+        );
+    assert!(matches!(
+        parse_err(&straddle_before_blinds),
+        ParseError::UnrecognizedLine { .. } | ParseError::IllegalAction { .. }
+    ));
+
+    // 4. First preflop actor changed to the seat left of the big blind
+    // In STRADDLE_BUTTON, seat 3 is button/straddler, seat 4 is SB, seat 5 is BB (Hero), seat 6 is 4e268376.
+    // Seat left of BB is seat 6. But first actor should be seat 4 (left of straddler).
+    let out_of_turn = STRADDLE_BUTTON.replace("4e268376: folds\n", "").replace(
+        "adbf678c: raises $0.26 to $0.46\n",
+        "4e268376: folds\nadbf678c: raises $0.26 to $0.46\n",
+    );
+    assert!(matches!(
+        parse_err(&out_of_turn),
+        ParseError::InvariantViolation { ref detail, .. } if detail.contains("acts out of turn")
+    ));
+
+    // 5. The straddler's final `checks` deleted
+    let no_check = STRADDLE_UTG_OPTION.replace("5daacec9: checks\n", "");
+    assert!(matches!(
+        parse_err(&no_check),
+        ParseError::InvariantViolation { ref detail, .. } if detail.contains("betting ended before 1 player(s) acted")
+    ));
+
+    // 6. `raises $0.1 to $0.3` facing a 0.2 straddle
+    let small_raise =
+        STRADDLE_UTG_OPTION.replace("adbf678c: calls $0.2", "adbf678c: raises $0.1 to $0.3");
+    assert!(matches!(
+        parse_err(&small_raise),
+        ParseError::IllegalAction { .. } | ParseError::InvariantViolation { .. }
+    ));
+
+    // 7. `straddle $0.2 and is all-in`
+    let all_in_suffix = STRADDLE_UTG_OPTION.replace(
+        "5daacec9: straddle $0.2",
+        "5daacec9: straddle $0.2 and is all-in",
+    );
+    assert!(matches!(
+        parse_err(&all_in_suffix),
+        ParseError::UnrecognizedLine { .. }
     ));
 }
