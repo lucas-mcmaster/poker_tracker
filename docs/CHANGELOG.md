@@ -1,15 +1,28 @@
 # `poker_tracker` blueprint changelog
 
-History only. The specification is `docs/BLUEPRINT.md`; where this file and the blueprint
-disagree, the blueprint is right (several v3.4 statements below were superseded in v3.5).
+History only. The specification is `docs/SPEC_v3.6.md` (and frozen `docs/BLUEPRINT.md` for v3.5 baseline); where this file and the spec disagree, the spec is right.
 
 | Version | Crate | Tests | Summary |
 | :--- | :--- | :--- | :--- |
+| v3.6 | 0.5.0 | 121 | Closes four §8 limitations using real GGPoker data: heads-up summary labels, uncontested summary shows, straddles, and EV Cashout receiving side; verified across 10 session exports (989 hands). |
 | v3.5 | 0.5.0 | 104 | Fixes from two reviews of v3.4 and an independent code review: betting replay (short all-ins, raise legality, minimum sizes, incomplete raises, blind sizes, all-in flag), side-pot eligibility, `Dealt to`/order/summary grammar rules, raw text + SHA-256 and `ContentConflict`, quarantine, true micro-units (migration 2), sightings-based undo, database identity, lock handling, stack-continuity warnings, CLI exit codes, extraction tool and lockfile. Details: blueprint §0. |
 | v3.4 | 0.4.0 | 75 | Betting replay; strict per-verb regexes; summary cross-checks; append-only migrations; import runs and provenance; `CurrencyConflict`; `--delete-run`. |
 | v3.3 | — | 64 | Site- and currency-independent model: `CurrencyCode`, `PotDeduction`, `PlayerAdjustment`, object-safe `HandParser`, `ParserRegistry`, `--ggpoker-currency`. |
 | v3.2 | — | 55 | Fixes from the review of v3.1 against the real export: per-milestone file variants, lossless money, multi-run boards, dead blinds, EV Cashout, one-card shows, strict validation. |
 | v3.1 | — | — | The original blueprint (Milestone 2 did not compile). |
+
+## v3.5 → v3.6
+
+Closes four §8 limitations using real GGPoker data across 10 session files (989 hands):
+
+- **M6 (Heads-up summary labels):** Support heads-up hands where the button posts the small blind and its summary line carries `(small blind)` only.
+- **M7 (Uncontested summary shows):** Support uncontested winners showing 1 or 2 cards in the summary without hand rank description, and require `won` iff a flop was dealt and `collected` iff not.
+- **M8 (Straddles):** Support forced posts with up to two straddles (`ActionType::PostStraddle`), preflop action starting left of the straddler, and minimum raise rules.
+- **M9 (EV Cashout receiving side):** Support EV Cashout receiving side (`AdjustmentKind::EvCashoutReceived`), requiring river settlement with body/summary agreement for losing players.
+- **M10 (Regression fixtures & session reconciliation):** 12 single-hand regression fixtures and full whole-folder reconciliation across 10 session files (989 hands, 1,130,742 bytes, Hero net `-$25.79`, 101 unique opponent hashes across 101 sessions).
+
+New stored identifiers: `PostStraddle` (`ActionType::PostStraddle`), `EvCashoutReceived` (`AdjustmentKind::EvCashoutReceived`).
+Final test count: 121 tests passing (zero failures).
 
 ## v3.3 → v3.4 (review fixes)
 

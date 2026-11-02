@@ -1,3 +1,5 @@
+> **Note:** Frozen at v3.5. For v3.6+ specification and current living rules, see `docs/SPEC_v3.6.md`, `docs/invariants.md`, and `docs/known_limitations.md`.
+
 # `poker_tracker` — Reference Implementation Blueprint (v3.5)
 
 Authoritative blueprint for the **hand-history ingestion and persistence backend** of
