@@ -4,3 +4,4 @@
 //! transactional SQLite storage, and a deterministic batch ingestion pipeline.
 
 pub mod domain;
+pub mod parser;
