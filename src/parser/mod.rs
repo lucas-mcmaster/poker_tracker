@@ -5,10 +5,12 @@
 //! that site's text format.
 
 pub mod base;
+pub mod ggpoker;
 pub mod registry;
 
 pub use base::{
     HandBlock, HandParser, ParseError, ParsedBlocks, first_content_line, split_hand_blocks,
     validate_hand,
 };
+pub use ggpoker::GgPokerParser;
 pub use registry::{DetectionError, ParserRegistry};
