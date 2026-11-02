@@ -7,16 +7,18 @@ disagree, stop and ask the user.
 
 ## 1. Sources of truth (in priority order)
 
-1. **`docs/BLUEPRINT.md`**: the reference implementation (v3.5). Every `## FILE: <path> ·
-   Milestone <N>` block is verified code: it compiles, passes its tests, and passes clippy and
-   rustfmt at its milestone. It is ~10,000 lines. Read sections 0–8 (the specification, ~530
-   lines) as needed; never read the code blocks to retype them, extract them with the tool (§4).
-2. **`.agents/rules/ARCHITECTURE.md`**: the design: layers, domain model, parser contract,
-   invariants, storage semantics, extension rules.
-3. **`.agents/rules/TASKS.md`**: the milestone plan, file lists, gates and expected test counts.
-4. This file: rules of engagement.
+1. **For Milestones 6–11 (v3.6):** **`docs/SPEC_v3.6.md`** and the repository code (`src/`,
+   `tests/`) are the source of truth. Follow the exact milestone tasks (M6 to M11) in
+   `docs/SPEC_v3.6.md`.
+2. **For Milestones 1–5 (v3.5 baseline, already completed):** **`docs/BLUEPRINT.md`** is the
+   frozen v3.5 reference implementation (~10,000 lines). Read sections 0–8 (~530 lines) as
+   needed for baseline context; never read its code blocks to retype them.
+3. **`.agents/rules/ARCHITECTURE.md`** (and, from M11 onward, **`docs/invariants.md`** and
+   **`docs/known_limitations.md`**): the design, layers, domain model, parser contract,
+   invariants, storage semantics, and extension rules.
+4. **`.agents/rules/TASKS.md`**: the v3.5 milestone plan (M0–M5).
+5. This file: rules of engagement.
 
-If the blueprint and a rule file disagree about code, the blueprint wins; report the conflict.
 `docs/CHANGELOG.md` is history only, never a specification.
 
 ## 2. Toolchain
@@ -24,8 +26,8 @@ If the blueprint and a rule file disagree about code, the blueprint wins; report
 - Crate `poker_tracker` 0.5.0, `edition = "2024"`, `rust-version = "1.88"` (minimum). Use the
   installed stable toolchain; the blueprint was verified on rustc 1.97.0.
 - **Always pass `--locked`** to `cargo build`, `test` and `clippy`, so the committed
-  `Cargo.lock` (shipped with the blueprint) is used. **Never pass `--ignore-rust-version`**: it
-  also lets Cargo pick dependency versions that need a newer Rust than 1.88.
+  `Cargo.lock` is used. **Never pass `--ignore-rust-version`**: it also lets Cargo pick
+  dependency versions that need a newer Rust than 1.88.
 - Import the library as `use poker_tracker::...` in `src/main.rs` and `tests/`.
 - Edition 2024 idioms:
   - `let`-chains (`if a && let Some(x) = y { … }`) instead of nested `if`/`if let`.
@@ -73,44 +75,36 @@ If the blueprint and a rule file disagree about code, the blueprint wins; report
 
 ## 4. How to work
 
-- **One milestone at a time**, in the order in `TASKS.md`. Create only the files listed for the
-  current milestone. Never create files from later milestones early.
-- **Milestones 1–5 are extraction + verification.** Write the milestone's files with the
-  extractor, then confirm there is no drift:
-  ```
-  cargo run -q --manifest-path tools/blueprint/Cargo.toml -- extract <M>
-  cargo run -q --manifest-path tools/blueprint/Cargo.toml -- check <M>
-  ```
-  `extract` applies the file-variant rule (`src/lib.rs`, `src/parser/mod.rs`) for you. Do not
-  retype, refactor, rename, reformat, "improve" or add code. If the tool cannot run, copy each
-  block verbatim (the content between the code fences) and still run `check` once it builds.
-- **Gate** (all must pass, in this order), or run the `milestone-gate` skill:
-  ```
-  cargo run -q --manifest-path tools/blueprint/Cargo.toml -- check <M>
-  cargo fmt --check
-  cargo clippy --locked --all-targets -- -D warnings
-  cargo test --locked
-  ```
-  and confirm the passed-test count equals the expected count in `TASKS.md`.
-- **When a gate fails:** run `check <M>` first (drift is the usual cause) and re-extract.
-  Never edit a test, assertion, fixture or lint setting to make a gate pass. After two
-  unsuccessful fix attempts, stop and report the exact error output.
+- **One milestone at a time**, in strict sequential order. Never start the next milestone in the
+  same turn as finishing the previous one; commit, report, and wait for the user.
+- **Milestones 1–5 (v3.5 baseline):** extraction + verification via `tools/blueprint`.
+- **Milestones 6–11 (v3.6 spec in `docs/SPEC_v3.6.md`):**
+  - Follow the exact TDD order in `docs/SPEC_v3.6.md`: (1) add real hand fixture verbatim to
+    `tests/common/mod.rs`; (2) write failing test; (3) update parser/validator/domain; (4) add
+    near-miss refusal tests.
+  - **Do NOT run `tools/blueprint extract` or `tools/blueprint check` in Milestones 6+**, as
+    `docs/BLUEPRINT.md` is frozen at v3.5.
+  - Run the gate (or the `milestone-gate` skill) at the end of every milestone:
+    ```
+    cargo fmt --check
+    cargo clippy --locked --all-targets -- -D warnings
+    cargo test --locked
+    ```
+    Confirm that 0 tests fail and the total passed-test count increases at each code milestone
+    (v3.5 baseline = 104 tests).
 - **Fixtures are read-only.** Never modify, reformat, regenerate or trim
-  `tests/fixtures/**` or the verbatim hands in `tests/common/mod.rs`. Opponent `Dealt to` lines
-  end with a space; `.editorconfig` and `.gitattributes` keep them, and a test pins the
-  export's SHA-256.
-- **Plan before acting** on anything not already specified in the blueprint (Milestone 6+ or any
-  change request): write a short implementation plan, list the files you will touch, and wait
-  for approval.
+  `tests/fixtures/**` or existing verbatim hands in `tests/common/mod.rs`. Opponent `Dealt to`
+  lines end with a space; `.editorconfig` and `.gitattributes` keep them, and tests pin the
+  exports' SHA-256 digests.
 - **Commit** after each passing gate:
   `milestone <N>: <summary> (gate: <count> tests passing)`. Never force-push, rewrite history,
   or run destructive git commands.
-- **Report** at the end of each milestone: files created, gate results with test count, and
-  anything that surprised you.
-- **Do not touch** `AGENTS.md`, `.agents/`, `docs/`, `tools/` or `Cargo.lock` unless the user
-  asks.
+- **Protected files:** Do not modify `AGENTS.md`, `.agents/`, `tools/`, or `Cargo.lock` unless
+  the user asks. Do not modify `docs/` in Milestones 6–10; in Milestone 11, create and update
+  `docs/invariants.md`, `docs/known_limitations.md`, `docs/CHANGELOG.md`, and the top note in
+  `docs/BLUEPRINT.md` as specified in `docs/SPEC_v3.6.md` §8.
 
-## 5. Repository layout (after Milestone 5)
+## 5. Repository layout
 
 ```text
 poker_tracker/
@@ -119,9 +113,12 @@ poker_tracker/
 ├── Cargo.lock                       # shipped with the blueprint; never regenerate
 ├── .editorconfig  .gitattributes    # keep fixtures and the blueprint verbatim
 ├── docs/
-│   ├── BLUEPRINT.md                 # v3.5 reference implementation
-│   └── CHANGELOG.md                 # history (not a specification)
-├── tools/blueprint/                 # extract / check / list (std only)
+│   ├── BLUEPRINT.md                 # v3.5 reference implementation (frozen)
+│   ├── SPEC_v3.6.md                 # v3.6 implementation specification (M6–M11)
+│   ├── invariants.md                # living invariants (created in M11)
+│   ├── known_limitations.md         # living limitations (created in M11)
+│   └── CHANGELOG.md                 # history (updated in M11)
+├── tools/blueprint/                 # M1–M5 extract / check / list (std only)
 ├── .agents/
 │   ├── rules/{ARCHITECTURE,TASKS}.md
 │   └── skills/milestone-gate/SKILL.md
@@ -134,8 +131,10 @@ poker_tracker/
 │   └── pipeline/ {mod, continuity, ingester}.rs
 └── tests/
     ├── common/mod.rs                # verbatim real hands + CAD parser helper
-    ├── ggpoker_parser.rs  real_session.rs  storage.rs  pipeline.rs  cli.rs
-    └── fixtures/ggpoker/NLHRed15_2026-08-21.txt   # real CAD export (provided by the user)
+    ├── ggpoker_parser.rs  real_session.rs  real_session_v3_6.rs  storage.rs  pipeline.rs  cli.rs
+    └── fixtures/ggpoker/
+        ├── NLHRed15_2026-08-21.txt  # v3.5 real CAD export (294 hands)
+        └── v3_6/*.txt               # 10 v3.6 real CAD exports (989 hands)
 ```
 
 ## 6. Running the tool
@@ -144,14 +143,6 @@ poker_tracker/
 cargo run --release --locked -- <input-dir> --ggpoker-currency CAD [--db poker_tracker.sqlite]
 cargo run --release --locked -- --delete-run <RUN-ID> [--db poker_tracker.sqlite]
 ```
-
-- Each import prints its `Batch Run ID` and counts (ingested, duplicates, failed, quarantined,
-  stack warnings). `--delete-run` undoes one import but keeps hands another import also
-  contained. Any option given twice is a usage error; the currency is case-insensitive.
-- Rejected hands are kept with their raw text in `quarantined_hands`; the `quarantine_pending`
-  view lists those not stored yet. Re-importing after a parser update stores them.
-- A database from v3.4 is upgraded in place on first open. Any other SQLite file is refused
-  untouched.
 
 Exit codes: `0` ok · `1` fatal (including an unknown run id or a locked database) · `2` usage
 (including a missing input directory) · `3` completed with rejected files or hands, or no
