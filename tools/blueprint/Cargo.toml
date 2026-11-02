@@ -1,0 +1,16 @@
+[package]
+name = "blueprint"
+version = "0.5.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Extracts and drift-checks the poker_tracker blueprint's ## FILE: blocks"
+publish = false
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"

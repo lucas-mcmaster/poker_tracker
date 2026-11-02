@@ -1,0 +1,7 @@
+# Keep the real export and the blueprint byte-for-byte: no line-ending conversion.
+tests/fixtures/** -text
+docs/BLUEPRINT.md -text
+# Source files always use LF, whatever the platform.
+*.rs text eol=lf
+*.toml text eol=lf
+Cargo.lock text eol=lf
