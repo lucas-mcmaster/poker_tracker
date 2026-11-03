@@ -40,4 +40,3 @@ pub fn format_factor(num: i64, den: i64) -> String {
         format_fixed2(val)
     }
 }
-
