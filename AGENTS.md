@@ -176,7 +176,7 @@ cargo run --release --locked -- --delete-run <RUN-ID> [--db poker_tracker.sqlite
 ```
 
 From M13: `--rebuild-stats [--db …]`. From M15: `--report <results|positions|sessions|stats>
-[--db …] [--out <path>]`. See `docs/SPEC_v3.7.md`.
+[--db …] [--stakes <sb>/<bb>[,…]] [--out <path>]`. See `docs/SPEC_v3.7.md`.
 
 Exit codes: `0` ok · `1` fatal (including an unknown run id, a missing database for a command
 that needs one, or a locked database) · `2` usage (including a missing input directory) · `3`

@@ -167,7 +167,10 @@ rules, are in `docs/invariants.md` §1 and §2.
 - **Quarantine:** `quarantine_hands(&[QuarantinedHand])`, once per run and text.
 - **Derived cache (M13):** `hand_player_stats` is created and rebuilt from
   `stats::COLUMNS` whenever `derived_cache.version` differs from `STATS_VERSION`, on open or on
-  `rebuild_derived()`; it is not in `MIGRATIONS` (`docs/SPEC_v3.7.md` §2).
+  `rebuild_derived()`; it is not in `MIGRATIONS`. Inserts and reports re-check the version
+  inside their own transaction and fail with `StaleDerivedCache` on a mismatch; a hand that
+  cannot be loaded fails the rebuild with `DerivedRebuildFailed`, naming it
+  (`docs/SPEC_v3.7.md` §2).
 
 ## 7. Pipeline and CLI
 
@@ -185,7 +188,7 @@ rules, are in `docs/invariants.md` §1 and §2.
 - A fatal storage error returns `PipelineError::Storage { source, partial_report }`.
 - CLI: `poker_tracker <dir> --ggpoker-currency CAD [--db path]` imports;
   `poker_tracker --delete-run <RUN-ID> [--db path]` undoes; from M13 `--rebuild-stats`; from
-  M15 `--report <kind> [--out path]`; `--help` exits 0; a missing input directory is a usage
+  M15 `--report <kind> [--stakes list] [--out path]`; `--help` exits 0; a missing input directory is a usage
   error checked before any database is opened; any option twice is a usage error; exit codes
   `0` ok, `1` fatal, `2` usage, `3` partial or no files.
 

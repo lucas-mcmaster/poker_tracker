@@ -40,7 +40,8 @@ def load(db):
         hands[r["id"]] = dict(
             id=r["id"], site_hand_id=r["site_hand_id"], platform=r["platform"],
             currency=r["currency"], sb=r["small_blind_micros"], bb=r["big_blind_micros"],
-            ts=datetime.fromisoformat(r["timestamp"]), table=r["table_name"],
+            ts=datetime.fromisoformat(r["timestamp"]), offset=r["utc_offset_seconds"],
+            table=r["table_name"],
             max_seats=r["max_seats"], button=r["button_seat"], pot=r["total_pot_micros"],
             file=os.path.basename(r["source_file"] or ""), players=[], actions=[], boards=[],
             winners=[], deductions=[], adjustments=[])
@@ -123,9 +124,9 @@ def position_label(code, max_seats):
 # ----------------------------------------------------------------------------------------------
 # M13 + M14: per player-hand counters (docs/stats.md §3-§4)
 # ----------------------------------------------------------------------------------------------
-COUNTERS = [
-    # M13 facts
-    "hands", "p_vpip", "p_pfr", "f_saw", "t_saw", "r_saw", "sd_went", "sd_won", "won_hand", "f_saw_won",
+M13_FACTS = ["hands", "p_walk", "p_vpip", "p_pfr_opp", "p_pfr", "f_saw", "t_saw", "r_saw",
+             "sd_went", "sd_won", "won_hand", "f_saw_won"]
+M14_COUNTERS = [
     # M14 preflop
     "p_rfi_opp", "p_rfi", "p_3bet_opp", "p_3bet", "p_3bet_faced", "p_3bet_fold", "p_3bet_call",
     "p_4bet_opp", "p_4bet", "p_4bet_faced", "p_4bet_fold", "p_4bet_call", "p_cc_opp", "p_cc",
@@ -135,7 +136,9 @@ COUNTERS = [
     "f_cbet_opp", "f_cbet", "f_cbet_faced", "f_cbet_fold", "f_cbet_call", "f_cbet_raise",
     "t_cbet_opp", "t_cbet", "t_cbet_faced", "t_cbet_fold", "t_cbet_call", "t_cbet_raise",
     "f_xr_opp", "f_xr",
-] + [f"{s}_{k}" for s in STREETS for k in ("bets", "raises", "calls", "checks", "folds")]
+]
+ACTION_COUNTS = [f"{s}_{k}" for s in STREETS for k in ("bets", "raises", "calls", "checks", "folds")]
+COUNTERS = M13_FACTS + M14_COUNTERS + ACTION_COUNTS
 
 
 class Street:
@@ -214,6 +217,8 @@ def counters(h):
             c["p_vpip"] = 1
         if t == "Raise":
             c["p_pfr"] = 1
+        if st["can_raise"]:
+            c["p_pfr_opp"] = 1   # PT4 cnt_p_raise_opp: a raise was possible at some decision
         if n not in first:
             first[n] = st
             unopened = st["raises"] == 0 and st["calls"] == 0
@@ -264,6 +269,13 @@ def counters(h):
                 steal_raiser = n
             first_raise_seen = True
             last_raiser = n
+
+    # walk: every other player folded preflop and this player never had to decide
+    # (`folded` holds only preflop folds at this point)
+    for p in h["players"]:
+        n = p["name"]
+        if n not in first and n not in folded and len(folded) == len(h["players"]) - 1:
+            out[n]["p_walk"] = 1
 
     # ---------------- postflop ----------------
     aggressor = last_raiser      # flop c-bet candidate
@@ -359,6 +371,15 @@ def results(h):
                             straddles=straddles[p["name"]]) for i, p in enumerate(ps)}
 
 
+def elapsed_seconds(a, b):
+    """Seconds from hand a's start to hand b's start: in UTC when both state an offset, else on
+    the timestamps as printed (docs/stats.md §6.1)."""
+    d = (b["ts"] - a["ts"]).total_seconds()
+    if a["offset"] is not None and b["offset"] is not None:
+        d -= b["offset"] - a["offset"]
+    return int(d)
+
+
 def sessions(hands):
     """Hero table sessions: same (platform, currency, table), consecutive hands (ordered by
     timestamp, then site hand id) at most 30 min apart."""
@@ -371,12 +392,12 @@ def sessions(hands):
         hs.sort(key=lambda h: (h["ts"], h["site_hand_id"]))
         cur = [hs[0]]
         for h in hs[1:]:
-            if (h["ts"] - cur[-1]["ts"]).total_seconds() > SESSION_GAP_SECONDS:
+            if elapsed_seconds(cur[-1], h) > SESSION_GAP_SECONDS:
                 out.append(cur); cur = [h]
             else:
                 cur.append(h)
         out.append(cur)
-    out.sort(key=lambda s: (s[0]["ts"], s[0]["table"]))
+    out.sort(key=lambda s: (s[0]["currency"], s[0]["ts"], s[0]["table"], s[0]["platform"]))
     return out
 
 
@@ -508,7 +529,7 @@ def stakes(h):
 
 
 STAT_ROWS = [  # (report id, numerator, denominator) in docs/stats.md §5 order
-    ("vpip", "p_vpip", "hands"), ("pfr", "p_pfr", "hands"), ("saw_flop", "f_saw", "hands"),
+    ("vpip", "p_vpip", "hands_ex_walks"), ("pfr", "p_pfr", "p_pfr_opp"), ("saw_flop", "f_saw", "hands"),
     ("wtsd", "sd_went", "f_saw"), ("wsd", "sd_won", "sd_went"), ("wwsf", "f_saw_won", "f_saw"),
     ("win", "won_hand", "hands"), ("rfi", "p_rfi", "p_rfi_opp"), ("three_bet_pf", "p_3bet", "p_3bet_opp"),
     ("fold_to_three_bet_pf", "p_3bet_fold", "p_3bet_faced"), ("call_three_bet_pf", "p_3bet_call", "p_3bet_faced"),
@@ -571,6 +592,7 @@ def main():
         tot = collections.Counter()
         for h in hs:
             tot.update(counters(h)[0][hero(h)["name"]])
+        tot["hands_ex_walks"] = tot["hands"] - tot["p_walk"]   # VPIP denominator
         return tot
 
     t36, t35 = hero_totals(v36), hero_totals(v35)
@@ -580,10 +602,10 @@ def main():
         pos[position_label(positions(h)[hero(h)["seat"]], h["max_seats"])] += 1
     print("  " + ", ".join(f"{k} {pos[k]}" for k in ("EP", "MP", "CO", "BTN", "SB", "BB", "?")))
     print("\n## SPEC §4 (M13): Hero M13 counters (v3.6 folder | v3.5 file)")
-    for k in COUNTERS[:10] + [f"{s}_{a}" for s in STREETS for a in ("bets", "raises", "calls", "checks", "folds")]:
+    for k in M13_FACTS + ACTION_COUNTS:
         print(f"  {k:<18} {t36[k]:>5} | {t35[k]}")
     print("\n## SPEC §5 (M14): Hero M14 counters, v3.6 folder")
-    for k in COUNTERS[10:46]:
+    for k in M14_COUNTERS:
         print(f"  {k:<18} {t36[k]}")
 
     def results_row(hs, with_ev):
@@ -621,18 +643,20 @@ def main():
         me = hero(h)
         lab = position_label(p[me["seat"]], h["max_seats"])
         agg[lab].update(dict(hands=1, net=me["net"], bbw=me["net"] * 1_000_000 // h["bb"], **{
-            k: c[me["name"]][k] for k in ("p_vpip", "p_pfr", "p_rfi", "p_rfi_opp")}))
+            k: c[me["name"]][k] for k in ("p_walk", "p_vpip", "p_pfr_opp", "p_pfr", "p_rfi", "p_rfi_opp")}))
     for lab in ("EP", "MP", "CO", "BTN", "SB", "BB", "?"):
         a = agg.get(lab)
         if a:
             print(f"  CAD,{lab},{a['hands']},{money(a['net'])},{fixed2(a['bbw'] * 100, a['hands'] * 1_000_000)},"
-                  f"{pct(a['p_vpip'], a['hands'])},{pct(a['p_pfr'], a['hands'])},{pct(a['p_rfi'], a['p_rfi_opp'])}")
+                  f"{pct(a['p_vpip'], a['hands'] - a['p_walk'])},{pct(a['p_pfr'], a['p_pfr_opp'])},"
+                  f"{pct(a['p_rfi'], a['p_rfi_opp'])}")
     print("\n## SPEC §6 (M15): sessions")
     sess = sessions(v36)
     for s in sess:
         net = sum(hero(h)["net"] for h in s)
         bbw = sum(hero(h)["net"] * 1_000_000 // h["bb"] for h in s)
-        print(f"  CAD,{s[0]['table']},{s[0]['ts'].isoformat()},{s[-1]['ts'].isoformat()},{len(s)},"
+        print(f"  CAD,{s[0]['platform']},{s[0]['table']},{s[0]['ts'].isoformat()},{s[-1]['ts'].isoformat()},"
+              f"{elapsed_seconds(s[0], s[-1])},{len(s)},"
               f"{money(net)},{fixed2(bbw * 100, len(s) * 1_000_000)}")
     print(f"  ({len(sessions(hands))} sessions over the whole database)")
     print("\n## SPEC §6 (M15): stats")

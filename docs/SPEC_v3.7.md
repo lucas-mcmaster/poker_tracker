@@ -1,6 +1,6 @@
 # poker_tracker — v3.7 implementation spec (derived statistics)
 
-Nov 2, 2026 · @Lucas
+Nov 2, 2026 · @Lucas · amended Nov 2, 2026 before M13 started (§11)
 
 ## 0. Agent brief
 
@@ -111,21 +111,52 @@ report::write_report (integer SUMs → Decimal → CSV) ◄┘
 **Derived cache lifecycle** (storage):
 
 1. **Insert.** When `insert_one` stores a new hand, its `hand_player_stats` rows are written in
-   the same savepoint. A duplicate writes nothing (its rows already exist).
+   the same savepoint. A duplicate writes nothing (its rows already exist). Before any write, the
+   batch applies the version guard (step 5).
 2. **Open.** After migrations, `SqliteRepository::initialize` reads
    `derived_cache.version` for `name = 'hand_player_stats'`. If it is missing or differs from
    `STATS_VERSION`, it rebuilds in one `BEGIN IMMEDIATE` transaction, re-reading the version
    under the lock so concurrent opens rebuild only once: `DROP TABLE IF EXISTS
    hand_player_stats`, create it from `COLUMNS`, derive every stored hand (via the existing
-   `load_hand_by_id`), and upsert `derived_cache`. A hand that cannot be loaded aborts the
-   rebuild with its `StorageError` and nothing changes. A new, empty database is "rebuilt"
-   instantly, so every existing test that opens a fresh database is unaffected.
+   `load_hand_by_id`), and upsert `derived_cache`. A new, empty database is "rebuilt" instantly,
+   so every existing test that opens a fresh database is unaffected.
+   - **A hand that cannot be loaded** aborts the rebuild, and with it the open, with
+     `StorageError::DerivedRebuildFailed { platform: String, site_hand_id: String, source:
+     Box<StorageError> }` (`platform` and `site_hand_id` as stored text, read directly from
+     `hands`, so they are available even when the platform column itself is the corrupt value);
+     nothing changes. Its message names the hand and the load error (e.g.
+     `cannot rebuild the statistics cache: GGPoker hand HD140650557 cannot be loaded: …`), so
+     the row can be found and repaired. This fails closed on purpose: such a database cannot be
+     opened by a v3.7 build, not even for `--delete-run`, until the row is repaired outside
+     `poker_tracker` (`docs/known_limitations.md`).
+   - **Waiting.** Every open already takes the write lock briefly (the migration loop), so an
+     open that starts while another connection is rebuilding waits up to `DEFAULT_BUSY_TIMEOUT`
+     (5 s) and then fails with the usual lock error (CLI exit `1`). This is a documented
+     limitation; it is not retried.
 3. **Forced rebuild.** `SqliteRepository::rebuild_derived(&mut self) -> Result<DerivedRebuild,
    StorageError>` does the same unconditionally. `DerivedRebuild { hands: usize, version: i64 }`.
    `SqliteRepository::rebuilt_on_open(&self) -> Option<DerivedRebuild>` reports whether step 2
    ran.
 4. **Delete.** `ON DELETE CASCADE` on `hand_id` removes rows with their hand; `delete_import_run`
-   needs no change.
+   needs no change (and no version guard: it never writes cache rows itself).
+5. **Version guard.** A connection can outlive the cache it opened: another build, with another
+   `STATS_VERSION`, may rebuild `hand_player_stats` while this connection is open, after which
+   this connection's rows have the wrong shape. So every operation that writes or reads cache
+   rows first reads `derived_cache.version` for `hand_player_stats` **inside its own
+   transaction**: `insert_hands_batch` / `insert_sourced_hands_batch` under their write lock,
+   before the first savepoint; `report::write_report` (M15) in the one read transaction it reads
+   all its sums in. If the row is missing or its version differs from `STATS_VERSION`, the
+   operation returns `StorageError::StaleDerivedCache { found: Option<i64>, expected: i64 }`
+   before touching anything.
+   - For inserts this is a **batch-level** error (like a lock error): nothing from the batch is
+     stored, nothing is quarantined, the pipeline returns `PipelineError::Storage`, and the CLI
+     exits `1`. It must never surface as per-hand rejections.
+   - The message says that another `poker_tracker` build changed the statistics cache (cache
+     version `found`, this build `expected`) and to run the command again; the next open
+     rebuilds the cache.
+   - The guard never rebuilds by itself: a mismatch means two builds share the database, which
+     must be visible, and a full rebuild inside an import's write lock can take seconds.
+     `rebuild_derived` is unconditional and needs no guard.
 
 `hand_player_stats` is created by the rebuild, **not** by `MIGRATIONS`: it is a cache whose shape
 follows `STATS_VERSION`. Migration 3 adds only the `derived_cache` table, which also makes older
@@ -154,8 +185,9 @@ current automatically.
 
 1. **M13.1 Stats module.** Create `src/stats/` with the contract of §2 and `pub mod stats;` in
    `src/lib.rs`. `STATS_VERSION = 1`. Implement positions (`stats.md` §2) and the M13 counters:
-   `hands`, `p_vpip`, `p_pfr`, `f_saw`, `t_saw`, `r_saw`, `sd_went`, `sd_won`, `won_hand`,
-   `f_saw_won`, and the 20 action counts `{p,f,t,r}_{bets,raises,calls,checks,folds}`.
+   `hands`, `p_walk`, `p_vpip`, `p_pfr_opp`, `p_pfr`, `f_saw`, `t_saw`, `r_saw`, `sd_went`,
+   `sd_won`, `won_hand`, `f_saw_won`, and the 20 action counts
+   `{p,f,t,r}_{bets,raises,calls,checks,folds}`.
 2. **M13.2 Migration 3** (append to `MIGRATIONS`; `SCHEMA_VERSION` becomes 3):
 
    ```sql
@@ -197,14 +229,46 @@ current automatically.
      position; a straddler keeps theirs; a hand whose SB is not left of the button gets `NULL`
      positions; VPIP ignores posts and the BB's or straddler's check; a fold on the turn has
      `t_saw = 1`, `r_saw = 0`; a preflop all-in run out to the river is `sd_went` for both; a
-     walk gives the BB `won_hand = 1` and `sd_went = 0`.
+     walk gives the BB `won_hand = 1`, `p_walk = 1`, `p_pfr_opp = 0` and `sd_went = 0`, and so
+     does a straddler to whom everyone folds.
+   - Walks and PFR opportunities (`stats.md` §3, §4.1), canonical, each with its near miss: a BB
+     who checks an unraised pot is not a walk (and has `p_pfr_opp = 1`); a BB who raises and
+     whose last opponent then folds is not a walk; a player whose every preflop decision faces a
+     bet that takes all of their remaining stack has `p_pfr_opp = 0` (they can only call all-in
+     or fold); a player whose only preflop decision comes when every other player has folded or
+     is all-in has `p_pfr_opp = 0`, even with chips behind; a player
+     who folds with a raise available has `p_pfr_opp = 1`; and `p_pfr ≤ p_pfr_opp` and
+     `p_vpip ≤ hands − p_walk` hold in every case. **No real hand in the corpus has a preflop
+     decision where a raise was impossible** (there, `p_pfr_opp = hands − p_walk` for every one
+     of the 6,840 player-hands, and in HD145319803 too), so these canonical tests are the only
+     check that `p_pfr_opp`
+     is not implemented as `hands − p_walk`.
+   - Real walks (`tests/common/mod.rs`): in `WALK` (HD140646565, the BB `10a37d12`),
+     `HU_PREFLOP_FOLD` (HD145412494, the BB `445e6868`) and `STRADDLE_BB_WALK` (HD145385508, the
+     BB and straddler `5daacec9`) exactly one player has `p_walk = 1`, with non-zero counters
+     `hands`, `p_walk`, `won_hand` only; every other player in those hands has `p_pfr_opp = 1`.
    - The three worked examples of `stats.md` §7, restricted to the M13 counters and positions.
    - Storage: rows written on insert equal the rows after `rebuild_derived` for all 1,283 real
      hands; deleting the `derived_cache` row (through `connection()`) and reopening a file
      database rebuilds it and `rebuilt_on_open()` reports it; `delete_import_run` removes the rows; a
      v3.4 database is upgraded and its cache built; four concurrent opens of a stale database
      rebuild exactly once (a new test beside `concurrent_opens_apply_each_migration_once`, which
-     stays unchanged).
+     stays unchanged). The concurrency test uses a **small** database (a few hands, not the
+     corpus), so its rebuild stays far inside the 5 s busy timeout in a debug build at every
+     milestone, M16 included.
+   - Version guard (§2 step 5): open a file database as `A`; through a second connection set
+     `derived_cache.version` to `STATS_VERSION + 1`; then `A.insert_sourced_hands_batch` returns
+     `StaleDerivedCache { found: Some(STATS_VERSION + 1), expected: STATS_VERSION }` and the
+     database is unchanged (no hand, player, sighting, run or quarantine row added). With the
+     `derived_cache` row deleted instead, `found` is `None`. Reopening rebuilds, and the same
+     insert then succeeds. Through the pipeline, a stale insert is a `PipelineError::Storage`
+     and quarantines nothing.
+   - Rebuild failure (§2 step 2): make one stored hand unloadable (e.g. set one of its
+     `actions.action_type` values to an unknown identifier through `connection()`), delete the
+     `derived_cache` row and reopen. The open fails with `DerivedRebuildFailed` carrying that
+     hand's platform and site hand id, its message contains the site hand id, and the cache
+     table and `derived_cache` are as before the open (inspect them with a plain `rusqlite`
+     connection).
    - Whole folder (`tests/real_session_v3_6.rs`): the pinned tables below.
    - CLI: `--rebuild-stats` on a missing file exits `1`; combined with an input directory exits
      `2`.
@@ -220,7 +284,9 @@ No player-hand in the corpus has a `NULL` position.
 | Counter | v3.6 folder | v3.5 file |
 | --- | --- | --- |
 | `hands` | 989 | 294 |
+| `p_walk` | 35 | 15 |
 | `p_vpip` | 258 | 67 |
+| `p_pfr_opp` | 954 | 279 |
 | `p_pfr` | 224 | 57 |
 | `f_saw` / `t_saw` / `r_saw` | 198 / 133 / 98 | 50 / 29 / 23 |
 | `sd_went` / `sd_won` | 55 / 26 | 16 / 8 |
@@ -234,8 +300,15 @@ No player-hand in the corpus has a `NULL` position.
 | river (`r_`) | 23 | 11 | 6 | 35 | 24 |
 
 **Docs:** add a **Derived data** section to `docs/invariants.md` (cache rules of §2 and
-`stats.md` §1.3, positions summary); in `docs/known_limitations.md` replace the "Derived
-statistics" bullet with what remains deferred (M14–M16 until they land, filters M17).
+`stats.md` §1.3 including the version guard, positions summary); in
+`docs/known_limitations.md` replace the "Derived statistics" bullet with what remains deferred
+(M14–M16 until they land, filters M17), and add two bullets:
+
+- an open that starts while another process rebuilds the statistics cache waits up to 5 s and
+  then fails with a lock error; run it again;
+- a stored hand that cannot be loaded makes the cache rebuild, and therefore every open by a
+  v3.7 build, fail with an error naming the hand, until the row is repaired outside
+  `poker_tracker`.
 
 **Done when:**
 
@@ -300,27 +373,67 @@ statistics" bullet with what remains deferred (M14–M16 until they land, filter
    `STATS_VERSION = 3`. In each hand the attributed parts sum exactly to the hand's `Rake` and
    other deductions (test it over the corpus).
 2. **M15.2 Report module** `src/report/`:
-   `pub fn write_report(repo: &SqliteRepository, kind: ReportKind, out: &mut impl Write) ->
-   Result<(), ReportError>` with `ReportKind::{Results, Positions, Sessions, Stats}`. Read only
-   integer sums from SQLite; compute ratios with `Decimal`; format per `stats.md` §1.2. Hero only;
-   every row is per currency; currencies in alphabetical order.
+   `pub fn write_report(repo: &SqliteRepository, kind: ReportKind, options: &ReportOptions, out:
+   &mut impl Write) -> Result<ReportOutcome, ReportError>` with
+   `ReportKind::{Results, Positions, Sessions, Stats}`.
+   - `ReportOptions { stakes: Option<Vec<Stakes>> }` (`None` = every stake; `Default` is
+     `None`). `Stakes { small_blind_micros: i64, big_blind_micros: i64 }` implements `FromStr`
+     for `<sb>/<bb>` and `Display` in the report's `stakes` format (§M15.4). M17 filters will
+     subsume this; until then it is the only selection.
+   - `ReportOutcome { unmatched_stakes: Vec<Stakes> }`: the selected stakes that matched no hero
+     hand, in the order given.
+   - Read every sum in **one read transaction**, after the version guard of §2 step 5 (a stale
+     cache is `ReportError::Storage(StorageError::StaleDerivedCache { .. })` and nothing is
+     written to `out`). Read only integer sums and text columns from SQLite; compute ratios with
+     `Decimal`; format per `stats.md` §1.2. Hero only; every row is per currency; currencies in
+     alphabetical order.
 3. **M15.3 CLI.** `poker_tracker --report <results|positions|sessions|stats> [--db <path>]
-   [--out <path>]`: opens with `open_existing`, writes CSV (with a header line, LF endings) to
-   `--out` or stdout, exits `0`; `1` on a missing database or I/O error; `2` on an unknown kind or
-   when combined with an import, `--delete-run` or `--rebuild-stats`. A database with no hands
-   prints the header only.
+   [--stakes <sb>/<bb>[,<sb>/<bb>…]] [--out <path>]`: opens with `open_existing`, writes CSV
+   (with a header line, LF endings) to `--out` or stdout, exits `0`; `1` on a missing database,
+   a stale cache or an I/O error; `2` on an unknown kind or when combined with an import,
+   `--delete-run` or `--rebuild-stats`. A database with no hands prints the header only.
+   **`--stakes`** restricts every report to the hero's hands at the listed stakes; without it
+   every stake is included.
+   - Each item is two positive decimal amounts, small blind then big blind, with at most six
+     decimal places. Items are compared numerically with the stored blinds (`0.05/0.10`
+     selects the stakes printed `0.05/0.1`) and apply in every currency (currencies stay
+     separate). A repeated item counts once.
+   - A malformed or empty list, or `--stakes` without `--report`, is a usage error (exit `2`).
+   - An item that matches no hand is not an error: the report covers the others, and stderr gets
+     one line `No hands at stakes <item>` per such item (the item as `Stakes` displays it).
+   - Sessions are formed from the selected hands only.
+   - Together with the results report's per-stakes rows and its `ALL` rows (§M15.4), this gives
+     results by stakes, at all stakes combined, and for any combination of stakes.
 4. **M15.4 CSV contracts** (columns in this order):
 
    | Report | Columns | Rows |
    | --- | --- | --- |
-   | `results` | `currency,stakes,hands,net,net_per_100,bb_won,bb_per_100,rake,fees,blinds,straddles` | One per currency and stakes (`<sb>/<bb>`, e.g. `0.05/0.1`), by big blind then small blind; then `stakes = ALL` for each currency with more than one stake |
+   | `results` | `currency,stakes,hands,net,net_per_100,bb_won,bb_per_100,rake,fees,blinds,straddles` | Grouped by currency (alphabetical). Within a currency: one row per stakes among the selected hands (`<sb>/<bb>`, each amount printed exactly as in `stats.md` §1.2, e.g. `0.05/0.1`), ordered by big blind then small blind; then, as the **last row of that currency's block**, one row with `stakes = ALL` combining all of that currency's selected stakes, present only when the block has more than one stakes row |
    | `positions` | `currency,position,hands,net,bb_per_100,vpip,pfr,rfi` | One per currency and position label, in the order `EP, MP, CO, BTN, SB, BB`, then `?` for `NULL` positions if any |
-   | `sessions` | `currency,table,start,end,hands,net,bb_per_100` | One per session (`stats.md` §6.1), by currency, start time, then table; `start`/`end` as stored (`2026-08-21T16:54:10`) |
-   | `stats` | `currency,stat,numerator,denominator,value` | One per stat of `stats.md` §5, in that table's order (`af_*` and `afq_*` last) |
+   | `sessions` | `currency,platform,table,start,end,duration_seconds,hands,net,bb_per_100` | One per session (`stats.md` §6.1), by currency, start time, table, then platform. `platform` is `Platform::as_str()` (the session key includes it, so two sites' tables of the same name stay apart). `start`/`end` are the first and last hands' timestamps as stored (`2026-08-21T16:54:10`). `duration_seconds` is an integer (`stats.md` §6.1) |
+   | `stats` | `currency,stat,numerator,denominator,value` | One per stat of `stats.md` §5, in that table's order (`af_*` and `afq_*` last). For `vpip` the denominator printed is `Σ hands − Σ p_walk` |
 
 5. **M15.5 Tests.** Golden CSVs for the v3.6 folder imported alone (below), the v3.5 results row,
-   the `ALL` row and position `?` row on in-memory synthetic hands, the CLI paths above, and that
-   `--report` never creates a database file.
+   the CLI paths above, and that `--report` never creates a database file. On in-memory
+   synthetic hands (canonical, no site text):
+   - **stakes:** hero hands at two stakes in one currency and one stake in another give, for
+     `results`, the first currency's two stakes rows then its `ALL` row, then the second
+     currency's single row with no `ALL` row; `--stakes` with one of the first currency's stakes
+     drops its other row and its `ALL` row; listing both (in either order, or with
+     `0.10`-style spellings) restores the `ALL` row; an unmatched item is reported in
+     `ReportOutcome::unmatched_stakes` (and by the CLI on stderr, exit `0`); malformed items
+     (`0.05`, `0.05/`, `a/b`, `0.0000001/0.1`, `-0.05/0.1`, `0/0.1`) are rejected by
+     `Stakes::from_str` and exit `2` from the CLI; `--stakes` also restricts `positions`,
+     `sessions` and `stats`;
+   - **positions:** a `NULL`-position hand gives the `?` row;
+   - **sessions:** a one-hand session has `duration_seconds = 0`; two hands 30:00 apart are one
+     session and 30:01 apart are two; hands that state UTC offsets across a daylight-saving
+     change (e.g. `01:50` at `-4 h`, then `01:10` at `-5 h`, 20 minutes later in UTC) are one
+     session with `duration_seconds = 1200`; two platforms' tables of the same name are
+     separate sessions (if only one `Platform` variant exists, test the grouping function
+     directly with distinct platform keys rather than adding a variant);
+   - **version guard:** a report on a connection whose cache another connection marked stale
+     returns `StaleDerivedCache` and writes nothing to `out`.
 
 **Pinned (v3.6 folder imported alone):**
 
@@ -336,27 +449,30 @@ CAD,MP,139,0.15,1.08,27.34,27.34,32.32
 CAD,CO,178,-5.08,-28.54,23.03,21.35,22.41
 CAD,BTN,185,19.31,104.38,25.95,23.24,32.99
 CAD,SB,197,-17.03,-86.45,29.95,29.95,46.97
-CAD,BB,194,-26.78,-138.04,24.74,11.86,0.00
+CAD,BB,194,-26.78,-138.04,30.19,14.47,0.00
 ```
 
+(Hero's 35 walks are all in the BB: 194 − 35 = 159 hands in the VPIP and PFR denominators of
+that row.)
+
 ```csv
-currency,table,start,end,hands,net,bb_per_100
-CAD,NLHRed14,2026-08-21T16:54:10,2026-08-21T17:05:03,24,7.75,322.92
-CAD,NLHRed18,2026-08-21T16:54:55,2026-08-21T18:53:36,167,-17.71,-106.05
-CAD,NLHRed4,2026-08-21T17:06:33,2026-08-21T18:46:04,182,-3.03,-16.65
-CAD,NLHRed10,2026-08-21T18:07:04,2026-08-21T18:49:17,87,3.78,43.45
-CAD,NLHRed14,2026-08-21T18:47:35,2026-08-21T19:45:04,90,-1,-11.11
-CAD,NLHRed19,2026-08-21T18:52:15,2026-08-21T19:47:00,102,9.41,92.25
-CAD,NLHRed7,2026-08-21T18:54:25,2026-08-21T19:45:18,84,-17.48,-208.10
-CAD,NLHRed21,2026-09-25T01:00:42,2026-09-25T02:09:56,99,-3.25,-32.83
-CAD,NLHRed3,2026-09-25T01:39:03,2026-09-25T02:36:41,100,3.45,34.50
-CAD,NLHRed15,2026-09-25T02:18:14,2026-09-25T02:57:07,54,-7.71,-142.78
+currency,platform,table,start,end,duration_seconds,hands,net,bb_per_100
+CAD,GGPoker,NLHRed14,2026-08-21T16:54:10,2026-08-21T17:05:03,653,24,7.75,322.92
+CAD,GGPoker,NLHRed18,2026-08-21T16:54:55,2026-08-21T18:53:36,7121,167,-17.71,-106.05
+CAD,GGPoker,NLHRed4,2026-08-21T17:06:33,2026-08-21T18:46:04,5971,182,-3.03,-16.65
+CAD,GGPoker,NLHRed10,2026-08-21T18:07:04,2026-08-21T18:49:17,2533,87,3.78,43.45
+CAD,GGPoker,NLHRed14,2026-08-21T18:47:35,2026-08-21T19:45:04,3449,90,-1,-11.11
+CAD,GGPoker,NLHRed19,2026-08-21T18:52:15,2026-08-21T19:47:00,3285,102,9.41,92.25
+CAD,GGPoker,NLHRed7,2026-08-21T18:54:25,2026-08-21T19:45:18,3053,84,-17.48,-208.10
+CAD,GGPoker,NLHRed21,2026-09-25T01:00:42,2026-09-25T02:09:56,4154,99,-3.25,-32.83
+CAD,GGPoker,NLHRed3,2026-09-25T01:39:03,2026-09-25T02:36:41,3458,100,3.45,34.50
+CAD,GGPoker,NLHRed15,2026-09-25T02:18:14,2026-09-25T02:57:07,2333,54,-7.71,-142.78
 ```
 
 ```csv
 currency,stat,numerator,denominator,value
-CAD,vpip,258,989,26.09
-CAD,pfr,224,989,22.65
+CAD,vpip,258,954,27.04
+CAD,pfr,224,954,23.48
 CAD,saw_flop,198,989,20.02
 CAD,wtsd,55,198,27.78
 CAD,wsd,26,55,47.27
@@ -400,6 +516,11 @@ CAD,afq_total,149,281,53.02
 
 v3.5 file imported alone, `results` row:
 `CAD,0.05/0.1,294,2.86,0.97,28.60,9.73,2.195316,0.353832,8.3,0`.
+
+**Docs:** in `docs/known_limitations.md`, add that session durations understate the time at the
+table by about one hand (hand histories record start times only) and that elapsed times are
+measured on the timestamps as printed when a site states no UTC offset (GGPoker), so a session
+that crosses a daylight-saving change is off by an hour there.
 
 **Done when:**
 
@@ -522,9 +643,11 @@ currency,stakes,hands,net,net_per_100,bb_won,bb_per_100,rake,fees,blinds,straddl
 CAD,0.05/0.1,989,-25.79,-2.61,-257.90,-26.08,14.23115,2.500423,29.25,0,9,-19.396794,-19.61
 ```
 
-The `sessions` report gains `ev_net` as its last column; its values for the ten sessions, in the
-order of §6, are `7.75, -17.550556, 2.584565, 0.91822, -1.744907, 9.41, -13.170909, -3.806818,
-3.923611, -7.71`.
+The `sessions` report gains `ev_net` as its last column
+(`currency,platform,table,start,end,duration_seconds,hands,net,bb_per_100,ev_net`); its values for
+the ten sessions, in the order of §6, are `7.75, -17.550556, 2.584565, 0.91822, -1.744907, 9.41,
+-13.170909, -3.806818, 3.923611, -7.71`. In the `results` report an `ALL` row's `allin_hands`,
+`ev_net` and `ev_bb_per_100` combine its currency's selected stakes like its other columns.
 
 **Done when:**
 
@@ -539,7 +662,8 @@ order of §6, are `7.75, -17.550556, 2.584565, 0.91822, -1.744907, 9.41, -13.170
   follow PokerTracker 4: game details (currency, stakes, table size, dates), hand details
   (position, won/lost, showdown, pot size), session details (session net, duration), hand values
   (hole cards, made hand), board texture, and actions and opportunities (any counter). Also
-  `--player <name>` for an opponent or the pool.
+  `--player <name>` for an opponent or the pool. The M15 `--stakes` selection becomes one
+  game-details filter; the option keeps working.
 - **M19 — Database management.** Re-parse stored raw text and quarantined hands after a parser
   upgrade (closes the known limitation); export selected hands as raw text; purge by date or run;
   SQLite online backup; hero aliases across sites (the accounts layer); optional "my currency"
@@ -571,9 +695,28 @@ order of §6, are `7.75, -17.550556, 2.584565, 0.91822, -1.744907, 9.41, -13.170
 | 8 | Multiway all-ins with side pots | Excluded from equity adjustment (PT4's rule) | Claude's call |
 | 9 | EV Cashout in equity results | The cashing player keeps their actual net; opponents are adjusted | Claude's call |
 | 10 | Rake attribution | Contributed method (by `invested`), largest-remainder rounding to micro-units | Claude's call |
-| 11 | Sessions | Same table, gaps of at most 30 minutes; computed at report time | Claude's call |
-| 12 | VPIP / PFR denominator | All hands dealt, walks included (PT3: "out of all hands") | Claude's call |
+| 11 | Sessions | Same platform, currency and table, gaps of at most 30 minutes (measured in UTC when both hands state an offset); computed at report time; the report shows `platform` and `duration_seconds` (first to last hand start) | Claude's call (gap); Owner (duration, site-neutral) |
+| 12 | VPIP / PFR denominators | PokerTracker 4's: VPIP `p_vpip / (hands − p_walk)` (PT4 `cnt_vpip / (cnt_hands − cnt_walks)`), PFR `p_pfr / p_pfr_opp` (PT4 `cnt_pfr / cnt_pfr_opp`: hands where a preflop raise was possible) | Owner |
 | 13 | Opportunity precision | First qualifying decision per player-hand; no reopening check after short all-ins | Claude's call |
 | 14 | Debug test speed | If exact equity makes `cargo test` exceed 60 s, `[profile.dev] opt-level = 1` may be added to `Cargo.toml` (no `Cargo.lock` change) | Claude's call |
+| 15 | Cache version skew | Inserts and reports check `derived_cache.version` inside their own transaction and fail with `StaleDerivedCache` (nothing written) on a mismatch; they never rebuild by themselves (§2 step 5) | Owner |
+| 16 | Unloadable hand during a rebuild | Fail closed: the open fails with `DerivedRebuildFailed` naming the hand's platform and site hand id (§2 step 2) | Owner |
+| 17 | Open during another process's rebuild | Waits the 5 s busy timeout, then fails with a lock error; documented, not retried; the concurrency test uses a small database | Owner |
+| 18 | Stakes | `results` has one row per stakes and an `ALL` row per currency with more than one; `--stakes` selects any set of stakes for every report (§M15.3) | Owner |
 
 "Claude's call" decisions stand unless the owner changes them before M13 starts.
+
+## 11. Amendments before M13 (Nov 2, 2026)
+
+Made after the owner's review, before any v3.7 code was written; `STATS_VERSION` stays at its
+planned values (nothing was built at the old definitions). Every changed number was recomputed
+with `tools/oracles/v3_7_oracle.py`.
+
+| Change | Where |
+| --- | --- |
+| VPIP and PFR use PT4's denominators: new M13 counters `p_walk` and `p_pfr_opp` | `stats.md` §3, §4.1, §5, §7; §4 here (tasks, tests, pinned counters); §6 `positions` (BB row) and `stats` (`vpip`, `pfr`) CSVs; decision 12 |
+| Version guard on inserts and reports, `StorageError::StaleDerivedCache` | §2 step 5; M13.6 and M15.5 tests; decision 15 |
+| A failed rebuild names the hand, `StorageError::DerivedRebuildFailed` | §2 step 2; M13.6 tests; decision 16 |
+| Lock wait during another process's rebuild is a documented limitation; the concurrency test uses a small database | §2 step 2; M13.6; M13 docs; decision 17 |
+| `sessions` report: `platform` and `duration_seconds` columns; elapsed time in UTC when offsets are stated | `stats.md` §6.1; M15.4; the `sessions` CSVs of §6 and §7.5; decision 11 |
+| `results` `ALL` row placement fixed; `--stakes` selection for every report | M15.2–M15.5; §7.5; §8 (M17); decision 18 |

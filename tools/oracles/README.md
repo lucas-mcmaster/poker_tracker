@@ -31,5 +31,9 @@ rm -rf /tmp/oracle.sqlite* /tmp/oracle_extra /tmp/oracle-venv
 If its output and `docs/stats.md` disagree, the script has a bug; if it and the crate disagree,
 find which one departs from `docs/stats.md`.
 
-Last run: 2026-11-02, on the 1,283 hands of `tests/fixtures/ggpoker/` plus HD145319803
-(Python 3.13, eval7 0.1.11).
+It also runs on a database holding only the v3.6 folder (the database SPEC_v3.7 §6 pins its
+reports on); sections for the missing file then print a note.
+
+Last run: 2026-11-02, after the pre-M13 amendments (SPEC_v3.7 §11: walks and PFR opportunities,
+session `platform` and `duration_seconds`), on the 1,283 hands of `tests/fixtures/ggpoker/` plus
+HD145319803, and on the v3.6 folder alone (Python 3.13, eval7 0.1.11).

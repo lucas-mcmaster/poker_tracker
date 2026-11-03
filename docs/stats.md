@@ -2,8 +2,9 @@
 
 Living definitions of every derived statistic. Introduced for v3.7 (`docs/SPEC_v3.7.md`). The
 stat list starts from the PokerTracker 3 statistical reference (names and formulas kept so that
-results can later be compared with PT3/PT4); every definition below is restated in terms of the
-canonical model so it can be computed identically for any site.
+results can later be compared with PT3/PT4); VPIP and PFR use PokerTracker 4's denominators
+(§5). Every definition below is restated in terms of the canonical model so it can be computed
+identically for any site.
 
 **This file is authoritative.** Code (`src/stats/`) and the independent oracle
 (`tools/oracles/v3_7_oracle.py`) implement it. If they disagree with this file, they have a bug.
@@ -20,7 +21,8 @@ A change to any definition here bumps `STATS_VERSION` (§1.3) in the same commit
   larger. Counters are stored in the derived table `hand_player_stats` (§1.3).
 - A **stat** is a ratio of two counter sums over a set of player-hands:
   `stat = Σ numerator / Σ denominator`. Percent stats are multiplied by 100. Counter names that
-  end in `_opp` or `_faced` are denominators ("opportunities").
+  end in `_opp` or `_faced` are denominators ("opportunities"). One denominator is a difference
+  of two sums: VPIP's `Σ hands − Σ p_walk` (§5).
 - A stat whose denominator sum is `0` has no value (an empty CSV cell), never `0`.
 
 ### 1.2 Arithmetic and display
@@ -107,6 +109,9 @@ stored.
 - **Unopened:** `raises == 0` and `calls == 0` at the decision (only forced posts so far).
 - **Money in the pot:** the player made any forced post in this hand (blinds, a missed blind or a
   straddle).
+- **Walk:** every other player folded preflop and the player made no decision in the hand. This
+  is the big blind when everyone folds to them, and equally a straddler to whom everyone folds
+  (5 such hands in the corpus); in every walk the player wins the pot without acting.
 - **Preflop aggressor:** the player who made the last preflop `Raise`; none if nobody raised.
 - **Steal attempt:** the first preflop `Raise` of the hand, if it was made at a steal
   opportunity (`p_steal_opp`, §4.1).
@@ -117,8 +122,8 @@ stored.
 - **Went to showdown:** the player is live at the end and at least two players are live at the
   end (this includes all-in hands that were run out before the river).
 
-Opportunity rules below say "the player's first decision with …". Each opportunity is counted at
-most once per player-hand. The approximation is deliberate: an opportunity does not check whether
+Opportunity rules below say "the player's first decision with …" (`p_pfr_opp` alone says "at
+least one decision"). Each opportunity is counted at most once per player-hand. The approximation is deliberate: an opportunity does not check whether
 an earlier all-in for less than a full raise reopened the betting.
 
 ---
@@ -130,8 +135,10 @@ an earlier all-in for less than a full raise reopened the betting.
 | Counter | Milestone | Definition |
 | --- | --- | --- |
 | `hands` | M13 | Always `1`. |
-| `p_vpip` | M13 | The player made at least one preflop `Call` or `Raise`. Forced posts and checks never count. |
-| `p_pfr` | M13 | The player made at least one preflop `Raise`. |
+| `p_walk` | M13 | The player had a walk (§3). PT4's `cnt_walks`. |
+| `p_vpip` | M13 | The player made at least one preflop `Call` or `Raise`. Forced posts and checks never count. Never `1` in a walk. |
+| `p_pfr_opp` | M13 | The player has at least one preflop decision at which `can_raise` holds (PT4's `cnt_pfr_opp`: a preflop raise was possible). It is `0` in a walk (no decision); when every preflop decision faces a bet that takes all of the player's remaining stack (they can only call all-in or fold); and when every other player has folded or is all-in at each of the player's decisions. |
+| `p_pfr` | M13 | The player made at least one preflop `Raise`. A legal raise needs `can_raise`, so `p_pfr = 1` implies `p_pfr_opp = 1`. |
 | `p_rfi_opp` | M14 | The player's first preflop decision is unopened and `can_raise`. |
 | `p_rfi` | M14 | `p_rfi_opp` and that decision is a `Raise`. |
 | `p_3bet_opp` | M14 | The player's first preflop decision with `raises == 1` is `can_raise`. |
@@ -182,8 +189,8 @@ an earlier all-in for less than a full raise reopened the betting.
 
 | Stat (report id) | PT3 name | Formula | Milestone |
 | --- | --- | --- | --- |
-| `vpip` | VP$IP | `p_vpip / hands` | M13 |
-| `pfr` | PFR | `p_pfr / hands` | M13 |
+| `vpip` | VP$IP | `p_vpip / (hands − p_walk)` (PT4: `cnt_vpip / (cnt_hands − cnt_walks)`) | M13 |
+| `pfr` | PFR | `p_pfr / p_pfr_opp` (PT4: `cnt_pfr / cnt_pfr_opp`) | M13 |
 | `saw_flop` | Saw Flop % | `f_saw / hands` | M13 |
 | `wtsd` | WTSD | `sd_went / f_saw` | M13 |
 | `wsd` | W$SD | `sd_won / sd_went` | M13 |
@@ -247,8 +254,19 @@ lower seat number. The parts always sum to exactly `T`. Use `i128` for the produ
 `T` is `0`, every part is `0`.
 
 **Sessions.** A table session is a maximal run of the hero's hands at the same `(platform,
-currency, table_name)`, ordered by timestamp then site hand id, where consecutive hands are at
-most **30 minutes** apart (`SESSION_GAP`). Sessions are computed at report time, not cached.
+currency, table_name)`, ordered by timestamp then site hand id, where consecutive hands start at
+most **30 minutes** apart (`SESSION_GAP`, inclusive). Sessions are computed at report time, not
+cached, from the hands the report selects.
+
+- **Elapsed time** between two hands is the difference of their start timestamps, in whole
+  seconds. When both hands state a UTC offset (`utc_offset_seconds`), it is taken in UTC (each
+  timestamp minus its offset), so a session across a daylight-saving change is measured
+  correctly. Otherwise the timestamps are compared as printed (GGPoker states no offset). The
+  gap rule and the duration both use it.
+- **Duration** (`duration_seconds`) is the elapsed time from the session's first hand to its
+  last hand. Hand histories record when a hand starts, not when it ends, so the duration
+  understates the time at the table by about one hand (30–40 s at GGPoker 6-max); a one-hand
+  session lasts `0`. The definition uses only start timestamps, which every site provides.
 
 ### 6.2 All-in equity (M16)
 
@@ -304,10 +322,10 @@ checks and folds the river.
 
 | Player | Position | Non-zero counters |
 | --- | --- | --- |
-| 6570ba77 | CO | `hands`, `p_folds`, `p_rfi_opp`, `p_steal_opp` |
-| 4af6a555 | BTN | `hands`, `p_folds`, `p_rfi_opp`, `p_steal_opp` |
-| Hero | SB | `hands`, `p_vpip`, `p_pfr`, `p_raises`, `p_rfi_opp`, `p_rfi`, `p_steal_opp`, `p_steal`, `f_saw`, `f_cbet_opp`, `f_cbet`, `f_bets`, `f_calls`, `t_saw`, `t_cbet_opp`, `t_checks`, `t_calls`, `r_saw`, `r_checks`, `r_folds` |
-| 2d5ce8a9 | BB | `hands`, `p_vpip`, `p_calls`, `p_3bet_opp`, `p_bb_steal_faced`, `f_saw`, `f_cbet_faced`, `f_cbet_raise`, `f_raises`, `t_saw`, `t_bets`, `r_saw`, `r_bets`, `won_hand`, `f_saw_won` |
+| 6570ba77 | CO | `hands`, `p_pfr_opp`, `p_folds`, `p_rfi_opp`, `p_steal_opp` |
+| 4af6a555 | BTN | `hands`, `p_pfr_opp`, `p_folds`, `p_rfi_opp`, `p_steal_opp` |
+| Hero | SB | `hands`, `p_vpip`, `p_pfr_opp`, `p_pfr`, `p_raises`, `p_rfi_opp`, `p_rfi`, `p_steal_opp`, `p_steal`, `f_saw`, `f_cbet_opp`, `f_cbet`, `f_bets`, `f_calls`, `t_saw`, `t_cbet_opp`, `t_checks`, `t_calls`, `r_saw`, `r_checks`, `r_folds` |
+| 2d5ce8a9 | BB | `hands`, `p_vpip`, `p_pfr_opp`, `p_calls`, `p_3bet_opp`, `p_bb_steal_faced`, `f_saw`, `f_cbet_faced`, `f_cbet_raise`, `f_raises`, `t_saw`, `t_bets`, `r_saw`, `r_bets`, `won_hand`, `f_saw_won` |
 
 Rake $0.24 and jackpot $0.10 split equally between Hero and the BB (each invested $2.50):
 `rake_attributed_micros` 120,000 and `fees_attributed_micros` 50,000 each.
@@ -317,15 +335,16 @@ folds; the straddler checks.
 
 | Player | Position | Non-zero counters |
 | --- | --- | --- |
-| 494b476f | SB | `hands`, `p_folds` |
-| c89b4da3 | BB | `hands`, `p_folds` |
-| 5daacec9 (straddler) | EP | `hands`, `p_checks`, `f_saw`, `f_bets`, `f_folds` |
-| adbf678c | MP | `hands`, `p_vpip`, `p_calls`, `p_rfi_opp`, `f_saw`, `f_raises`, `won_hand`, `f_saw_won` |
-| Hero | CO | `hands`, `p_folds` |
-| 4e268376 | BTN | `hands`, `p_folds` |
+| 494b476f | SB | `hands`, `p_pfr_opp`, `p_folds` |
+| c89b4da3 | BB | `hands`, `p_pfr_opp`, `p_folds` |
+| 5daacec9 (straddler) | EP | `hands`, `p_pfr_opp`, `p_checks`, `f_saw`, `f_bets`, `f_folds` |
+| adbf678c | MP | `hands`, `p_vpip`, `p_pfr_opp`, `p_calls`, `p_rfi_opp`, `f_saw`, `f_raises`, `won_hand`, `f_saw_won` |
+| Hero | CO | `hands`, `p_pfr_opp`, `p_folds` |
+| 4e268376 | BTN | `hands`, `p_pfr_opp`, `p_folds` |
 
 No steal opportunities (the hand has a straddle), no c-bet (nobody raised preflop), and Hero has
-no RFI opportunity (a limper is in). Rake $0.04 by largest remainder: SB 2,151, BB 4,301,
+no RFI opportunity (a limper is in). Every player could have raised, so every player has
+`p_pfr_opp`. Rake $0.04 by largest remainder: SB 2,151, BB 4,301,
 straddler 16,774, adbf678c 16,774 micro-units (the SB's remainder is the largest).
 
 **HD140650645** (first hand of `SAMPLE_SESSION`): folded to the SB, who completes; the BB checks;
@@ -333,9 +352,9 @@ checked down to showdown.
 
 | Player | Position | Non-zero counters |
 | --- | --- | --- |
-| 4af6a555 | BB | `hands`, `p_checks`, `f_saw`, `f_checks`, `t_saw`, `t_checks`, `r_saw`, `r_checks`, `sd_went` |
-| Hero | BTN | `hands`, `p_folds`, `p_rfi_opp`, `p_steal_opp` |
-| 2d5ce8a9 | SB | `hands`, `p_vpip`, `p_calls`, `p_rfi_opp`, `p_steal_opp`, `f_saw`, `f_checks`, `t_saw`, `t_checks`, `r_saw`, `r_checks`, `sd_went`, `sd_won`, `won_hand`, `f_saw_won` |
+| 4af6a555 | BB | `hands`, `p_pfr_opp`, `p_checks`, `f_saw`, `f_checks`, `t_saw`, `t_checks`, `r_saw`, `r_checks`, `sd_went` |
+| Hero | BTN | `hands`, `p_pfr_opp`, `p_folds`, `p_rfi_opp`, `p_steal_opp` |
+| 2d5ce8a9 | SB | `hands`, `p_vpip`, `p_pfr_opp`, `p_calls`, `p_rfi_opp`, `p_steal_opp`, `f_saw`, `f_checks`, `t_saw`, `t_checks`, `r_saw`, `r_checks`, `sd_went`, `sd_won`, `won_hand`, `f_saw_won` |
 
 ---
 
