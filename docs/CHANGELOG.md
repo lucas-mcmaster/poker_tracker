@@ -4,12 +4,24 @@ History only. The specification is `docs/SPEC_v3.6.md` (and frozen `docs/BLUEPRI
 
 | Version | Crate | Tests | Summary |
 | :--- | :--- | :--- | :--- |
+| v3.6.1 | 0.5.0 | 123 | Audit fixes: refuse six never-observed hand shapes, summary-card and `won`/`collected` checks completed, database identity read as one snapshot (foreign files refused at once), docs synced with code. |
 | v3.6 | 0.5.0 | 121 | Closes four §8 limitations using real GGPoker data: heads-up summary labels, uncontested summary shows, straddles, and EV Cashout receiving side; verified across 10 session exports (989 hands). |
 | v3.5 | 0.5.0 | 104 | Fixes from two reviews of v3.4 and an independent code review: betting replay (short all-ins, raise legality, minimum sizes, incomplete raises, blind sizes, all-in flag), side-pot eligibility, `Dealt to`/order/summary grammar rules, raw text + SHA-256 and `ContentConflict`, quarantine, true micro-units (migration 2), sightings-based undo, database identity, lock handling, stack-continuity warnings, CLI exit codes, extraction tool and lockfile. Details: blueprint §0. |
 | v3.4 | 0.4.0 | 75 | Betting replay; strict per-verb regexes; summary cross-checks; append-only migrations; import runs and provenance; `CurrencyConflict`; `--delete-run`. |
 | v3.3 | — | 64 | Site- and currency-independent model: `CurrencyCode`, `PotDeduction`, `PlayerAdjustment`, object-safe `HandParser`, `ParserRegistry`, `--ggpoker-currency`. |
 | v3.2 | — | 55 | Fixes from the review of v3.1 against the real export: per-milestone file variants, lossless money, multi-run boards, dead blinds, EV Cashout, one-card shows, strict validation. |
 | v3.1 | — | — | The original blueprint (Milestone 2 did not compile). |
+
+## v3.6 → v3.6.1 (audit fixes)
+
+From the audit of `1af1f57`; see `docs/SPEC_v3.6.1.md`.
+
+- **Never-observed shapes now refused:** heads-up missed blind, all-in straddle, blind for less than the stake, a second straddle by the same player, heads-up straddle, heads-up button not posting the small blind.
+- **Summary checks:** an opponent's uncontested summary show includes every body-shown card; `won` needs a flop on every `showed` line.
+- **Storage:** database identity is read in one read transaction and only a busy lock is retried; the M6 change that retried `NotAPokerTrackerDatabase` for 5 s is removed.
+- **Tests:** the min-raise-over-straddle refusal is a consistent edit; new refusal tests for the shapes above and an EV Cashout in a multi-run hand.
+
+Final test count: 123 tests passing (zero failures).
 
 ## v3.5 → v3.6
 

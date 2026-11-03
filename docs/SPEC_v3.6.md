@@ -426,3 +426,13 @@ When a real sample of any of these turns up, add it as a new milestone in the sa
 | 2 | Heads-up label rule | Narrow (heads-up and button posted SB) or general (any button that posted SB) | Narrow (owner decision) |
 | 3 | Require `won` when a flop was dealt and `collected` when none was, on plain summary payout lines too | Yes or no | Yes (Claude's call). It held on 801/801 lines, and a wrong guess only quarantines a hand, which a re-import after a fix recovers |
 | 4 | Record whether shown cards came from the body or the summary | Add a provenance column, or don't | No provenance column (owner decision) |
+
+## 11. Errata (v3.6.1)
+
+Found by the audit of `1af1f57`; implemented in M12 (`docs/SPEC_v3.6.1.md`).
+
+1. **M7.2:** `RE_SEAT_SHOWED_UNCONTESTED` is tried *before* `RE_SEAT_SHOWED`. In the original order, `showed [c1 c2] and won ($x)` matches the general shape first and cannot import.
+2. **M8.3:** a straddle that uses the poster's whole stack is refused by the GGPoker parser (`IllegalAction`), as §9 requires. The validator still allows it site-neutrally.
+3. **§9 also refuses:** a second straddle by the same player, a heads-up straddle, and a heads-up hand where the button does not post the small blind (owner decision, 2026-11-02).
+4. **M8.6:** refusal 6 is tested with a consistent edit (the straddler calls; pot and payout +$0.20), so only the minimum-raise rule can refuse it.
+5. **Storage:** `SqliteRepository::initialize` reads the database identity in one read transaction and retries only a busy lock.

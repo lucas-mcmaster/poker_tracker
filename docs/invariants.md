@@ -46,7 +46,7 @@ storage re-validates before inserting. No invariant is ever weakened or skipped.
   - At most one small blind and at least one big blind.
   - A live small or big blind equals the stake, or less only when the poster is all-in.
   - Dead money (`PostDeadBlind`) is at most one big blind.
-  - Up to two straddles. Each straddle is posted before the deal in turn order clockwise from the big blind (UTG straddle first, then double straddle / UTG+1 straddle).
+  - Up to two straddles, by different players, after every blind. Any seat may straddle, including a blind poster (observed: SB, BB, UTG, button), and the order is not tied to seat position (HD145385574: the BB straddles, then the button re-straddles).
   - Each straddle must be exactly 2× the highest commitment before it (less only when all-in).
 - **Action order:**
   - Preflop action starts left of the last straddler (or left of the first big blind poster if no straddle).
@@ -59,7 +59,7 @@ storage re-validates before inserting. No invariant is ever weakened or skipped.
   - `Bet` only when no bet is faced, of at least the big blind unless all-in.
   - `Raise` only when facing a bet:
     - Preflop after straddle(s), the first raise must add at least the last straddle's total commitment (standard rule), or less only when all-in.
-    - Otherwise, a raise must exceed the faced bet by at least the last full bet or raise (initially the big blind), or complete a smaller all-in to the minimum raise, unless all-in.
+    - Otherwise, a raise must exceed the faced bet by at least the last full bet or raise (initially the big blind), or complete a smaller all-in to the big blind, unless all-in.
   - A bet or raise is legal only when at least one other active opponent has chips remaining.
   - A player who already acted on the street may raise again only when facing at least a full raise since then; an all-in for less than a full raise does not reopen the betting (a check preserves the right to raise).
 - **Uncalled bet returns:**
@@ -87,7 +87,7 @@ storage re-validates before inserting. No invariant is ever weakened or skipped.
   - Are never triggered at showdown.
   - `EvCashoutReceived` only for a non-folded player with zero payout (`won == 0`).
   - `EvCashoutRiskPaid` only for a player with a positive payout (`won > 0`).
-  - Single-run and unsplit pots only.
+  - (The GGPoker parser additionally refuses any cashout in a multi-run hand or a hand with more than one payout line; see §2. `validate_hand` does not.)
 - Every player's net converts losslessly to integer micro-units (`1.00 = 1_000_000`, `i64`).
 
 ### Boards
@@ -107,7 +107,8 @@ Site-specific text format rules observed in real exports:
 - **Blinds and straddles:**
   - Small blind is the first blind posted.
   - Blinds and straddles may be posted only before `*** HOLE CARDS ***`.
-  - A blind or straddle that uses the poster's whole stack is recorded as all-in (GGPoker prints no suffix there).
+  - A blind that uses the poster's whole stack is recorded as all-in (GGPoker prints no suffix there).
+  - Refused as never observed: a live blind for less than the stake, a missed blind in a heads-up hand, a heads-up straddle, a second straddle by the same player, and an all-in straddle (whatever its size).
 - **Hole cards:**
   - Exactly one `Dealt to` line per seated player, in seat order, directly after `*** HOLE CARDS ***`.
   - Only Hero's line carries cards (`Dealt to Hero [c1 c2]`); opponent lines end with a trailing space (`Dealt to <name> `).
@@ -117,7 +118,7 @@ Site-specific text format rules observed in real exports:
   - EV Cashout:
     - Chosen on flop or turn (`<name>: Chooses to EV Cashout`), at most once per player.
     - Settled on the river by `<name>: Pays Cashout Risk ($x)` (winner) or `<name>: Receives Cashout ($x)` (loser).
-    - Single-run, unsplit pots only; cashout in multi-run or split pots is quarantined as `UnsupportedAdjustment`.
+    - Single-run hands with exactly one payout line only. A cashout in a multi-run hand, or in any hand with two or more `collected` lines (a split pot, but also one player collecting a main and a side pot), is quarantined as `UnsupportedAdjustment`.
 - **Showdown headers:** come in run order (`*** FIRST/SECOND/THIRD SHOWDOWN ***`).
 - **Summary section:**
   - Per-seat winnings and cashout settlements: body `Pays Cashout Risk ($x)` ⇔ summary `, Cashout Risk ($x)`; body `Receives Cashout ($x)` ⇔ summary `, EV Cashout ($x)`, with equal amounts.
@@ -127,14 +128,15 @@ Site-specific text format rules observed in real exports:
     - `folded before Flop [(didn't bet)]`
     - `folded on the <street>`
     - `won|collected ($x)`
-    - `showed [c1 c2] and won|collected ($x)` (uncontested winner, no description)
+    - `showed [c1] and won|collected ($x)` or `showed [c1 c2] and won|collected ($x)` (uncontested winner, no description; tried before the general `showed` shape)
     - `showed [c1 c2] and <outcome>[, and <outcome>]…[, Cashout Risk ($x) | , EV Cashout ($x)]` where outcome is `won ($x)` or `lost`, optionally followed by `with <description>`
   - **`won` vs `collected`:** `won` appears if and only if a flop was dealt; `collected` appears if and only if no flop was dealt, on plain and `showed` lines alike.
   - **Summary position labels:**
     - `(button)`, `(small blind)` and `(big blind)` match the button seat, small blind poster, and first big blind poster.
-    - **Heads-up rule:** in a heads-up hand where the button posted the small blind, the button's summary line carries `(small blind)` only (the `(button)` label is omitted by GGPoker).
+    - **Heads-up rule:** in a heads-up hand the button posts the small blind (any other arrangement is refused), and the button's summary line carries `(small blind)` only (GGPoker omits `(button)`).
   - **Shown cards:**
-    - Shown cards equal the player's known cards; for uncontested summary shows, cards must agree with any previously known cards for that player.
+    - On the general `showed` shape, shown cards equal the player's known cards.
+    - On the uncontested shape, an opponent's summary cards include every card they showed in the body (a second card may be added); Hero's summary cards are among Hero's dealt cards. A card that collides with the board or another player is `ConflictingHoleCards` or `DuplicateCard`.
     - An uncontested winner may show 1 or 2 cards, or not show.
     - A player still in a contested hand must show, with one outcome per runout.
 

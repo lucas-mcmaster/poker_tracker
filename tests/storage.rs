@@ -667,3 +667,19 @@ fn ev_cashout_received_round_trips_through_sqlite() {
         .unwrap();
     assert_eq!(loaded, hand);
 }
+
+#[test]
+fn a_foreign_database_is_refused_without_waiting_for_the_busy_timeout() {
+    let other = NamedTempFile::new().unwrap();
+    rusqlite::Connection::open(other.path())
+        .unwrap()
+        .execute_batch("CREATE TABLE notes (body TEXT);")
+        .unwrap();
+    let start = std::time::Instant::now();
+    assert!(SqliteRepository::open(other.path()).is_err());
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(1),
+        "refusal took {:?}",
+        start.elapsed()
+    );
+}

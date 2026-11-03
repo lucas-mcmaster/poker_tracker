@@ -1658,12 +1658,27 @@ fn straddle_refusal_tests() {
         ParseError::InvariantViolation { ref detail, .. } if detail.contains("betting ended before 1 player(s) acted")
     ));
 
-    // 6. `raises $0.1 to $0.3` facing a 0.2 straddle
-    let small_raise =
-        STRADDLE_UTG_OPTION.replace("adbf678c: calls $0.2", "adbf678c: raises $0.1 to $0.3");
+    // 6. `raises $0.1 to $0.3` facing a 0.2 straddle. The rest of the hand is kept consistent
+    // (the straddler calls, pot and payout grow by 0.20) so that only the minimum-raise rule
+    // can refuse it; the same edit raising to 0.40 is accepted.
+    let raise_to = |by: &str, to: &str, call: &str, pot: &str, won: &str| {
+        STRADDLE_UTG_OPTION
+            .replace(
+                "adbf678c: calls $0.2",
+                &format!("adbf678c: raises ${by} to ${to}"),
+            )
+            .replace("5daacec9: checks", &format!("5daacec9: calls ${call}"))
+            .replace("Total pot $0.93", &format!("Total pot ${pot}"))
+            .replace(
+                "collected $0.89 from pot",
+                &format!("collected ${won} from pot"),
+            )
+            .replace("won ($0.89)", &format!("won (${won})"))
+    };
+    parse(&raise_to("0.2", "0.4", "0.2", "1.33", "1.29"));
     assert!(matches!(
-        parse_err(&small_raise),
-        ParseError::IllegalAction { .. } | ParseError::InvariantViolation { .. }
+        parse_err(&raise_to("0.1", "0.3", "0.1", "1.13", "1.09")),
+        ParseError::InvariantViolation { ref detail, .. } if detail.contains("illegal Raise to 0.3")
     ));
 
     // 7. `straddle $0.2 and is all-in`
@@ -1674,5 +1689,119 @@ fn straddle_refusal_tests() {
     assert!(matches!(
         parse_err(&all_in_suffix),
         ParseError::UnrecognizedLine { .. }
+    ));
+}
+
+#[test]
+fn v3_6_audit_refusals() {
+    // An opponent's summary show must repeat the card they showed in the body.
+    let other_card =
+        BODY_AND_SUMMARY_ONE_CARD.replace("showed [6s] and won", "showed [7c] and won");
+    assert!(matches!(
+        parse_err(&other_card),
+        ParseError::SummaryMismatch { .. }
+    ));
+    // ...adding a second card is still accepted.
+    let h =
+        parse(&BODY_AND_SUMMARY_ONE_CARD.replace("showed [6s] and won", "showed [6s 7c] and won"));
+    let p = h.players.iter().find(|p| p.name == "dcd1bbfb").unwrap();
+    assert_eq!(p.hole_cards, [Some(card("6s")), Some(card("7c"))]);
+
+    // `won` without a flop is refused on the description-carrying `showed` shape too.
+    let walk_shown = WALK.replace(
+        "Uncalled bet ($0.05) returned to 10a37d12\n",
+        "Uncalled bet ($0.05) returned to 10a37d12\n10a37d12: shows [Ah Kh]\n",
+    );
+    let won_preflop = walk_shown.replace(
+        "10a37d12 (big blind) collected ($0.1)",
+        "10a37d12 (big blind) showed [Ah Kh] and won ($0.1) with high card Ace",
+    );
+    assert!(matches!(
+        parse_err(&won_preflop),
+        ParseError::SummaryMismatch { .. }
+    ));
+
+    // Spec s9 straddle shapes: all-in (exactly 2x), a second straddle by the same player,
+    // and a heads-up straddle.
+    let all_in = STRADDLE_BB_WALK.replace(
+        "Seat 3: 5daacec9 ($13.56 in chips)",
+        "Seat 3: 5daacec9 ($0.2 in chips)",
+    );
+    assert!(matches!(
+        parse_err(&all_in),
+        ParseError::IllegalAction { ref reason, .. } if reason.contains("all-in straddle")
+    ));
+    let twice = STRADDLE_BB_WALK
+        .replace(
+            "5daacec9: straddle $0.2\n",
+            "5daacec9: straddle $0.2\n5daacec9: straddle $0.4\n",
+        )
+        .replace("Uncalled bet ($0.15)", "Uncalled bet ($0.35)");
+    assert!(matches!(
+        parse_err(&twice),
+        ParseError::IllegalAction { .. }
+    ));
+    let hu_straddle = HU_PREFLOP_FOLD
+        .replace(
+            "445e6868: posts big blind $0.1\n",
+            "445e6868: posts big blind $0.1\n445e6868: straddle $0.2\n",
+        )
+        .replace("Uncalled bet ($0.05)", "Uncalled bet ($0.15)");
+    assert!(matches!(
+        parse_err(&hu_straddle),
+        ParseError::IllegalAction { .. }
+    ));
+
+    // Spec s9 heads-up shapes: a missed blind, and a button that is not the small blind.
+    let hu_dead = HU_PREFLOP_FOLD
+        .replace(
+            "445e6868: posts big blind $0.1\n",
+            "445e6868: posts big blind $0.1\n445e6868: posts missed blind $0.05\n",
+        )
+        .replace("collected $0.1 from pot", "collected $0.15 from pot")
+        .replace("Total pot $0.1 |", "Total pot $0.15 |")
+        .replace("collected ($0.1)", "collected ($0.15)");
+    assert!(matches!(
+        parse_err(&hu_dead),
+        ParseError::UnrecognizedLine { .. }
+    ));
+    let hu_button_bb = HU_PREFLOP_FOLD
+        .replace("Seat #3 is the button", "Seat #6 is the button")
+        .replace(
+            "Seat 6: 445e6868 (big blind)",
+            "Seat 6: 445e6868 (button) (big blind)",
+        );
+    assert!(matches!(
+        parse_err(&hu_button_bb),
+        ParseError::SummaryMismatch { .. }
+    ));
+
+    // Spec s9: an all-in blind for less than the stake.
+    let short_bb = WALK
+        .replace(
+            "Seat 4: 10a37d12 ($8.95 in chips)",
+            "Seat 4: 10a37d12 ($0.07 in chips)",
+        )
+        .replace(
+            "10a37d12: posts big blind $0.1",
+            "10a37d12: posts big blind $0.07",
+        )
+        .replace(
+            "Uncalled bet ($0.05) returned",
+            "Uncalled bet ($0.02) returned",
+        );
+    assert!(matches!(
+        parse_err(&short_bb),
+        ParseError::UnrecognizedLine { .. }
+    ));
+
+    // Spec s9: an EV Cashout in a multi-run hand.
+    let multi_run_cashout = RIT_TWICE_TURN.replace(
+        "53be55c0: shows [9s 9c] (three of a kind, Nines)\n",
+        "53be55c0: shows [9s 9c] (three of a kind, Nines)\n53be55c0: Chooses to EV Cashout\n",
+    );
+    assert!(matches!(
+        parse_err(&multi_run_cashout),
+        ParseError::UnsupportedAdjustment { .. }
     ));
 }

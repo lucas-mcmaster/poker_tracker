@@ -777,8 +777,11 @@ impl BettingState {
 
 /// Replays the betting street by street (No-Limit rules, seat order clockwise by seat number):
 ///
-/// - blinds come first and match the stakes (less only when the poster is all-in); preflop
-///   action starts left of the first big blind poster, later streets start left of the button;
+/// - forced posts come first: blinds (matching the stakes, less only when the poster is all-in),
+///   dead blinds, then up to two straddles by different players, each twice the highest live
+///   commitment before it (less only when all-in); preflop action starts left of the last
+///   straddler (else the first big blind poster), later streets start left of the button; the
+///   first preflop raise adds at least the last straddle's total (else the big blind);
 /// - every player still able to act must act, in turn, until the round closes; a bet or raise
 ///   makes everyone else still able to act owe an action again; a lone player who can still
 ///   act and already matches the highest commitment owes nothing;
@@ -859,7 +862,8 @@ fn validate_betting(hand: &CanonicalHand) -> Result<(), ParseError> {
     else {
         return Err(violation(hand, "no big blind posted"));
     };
-    if posted[..first_big_blind_idx]
+    let before_big_blind = posted.get(..first_big_blind_idx).unwrap_or(&[]);
+    if before_big_blind
         .iter()
         .any(|a| a.action_type == ActionType::PostStraddle)
     {
@@ -868,21 +872,29 @@ fn validate_betting(hand: &CanonicalHand) -> Result<(), ParseError> {
     if let Some(first_straddle_idx) = posted
         .iter()
         .position(|a| a.action_type == ActionType::PostStraddle)
-        && posted[first_straddle_idx..]
+        && posted
+            .get(first_straddle_idx..)
+            .unwrap_or(&[])
             .iter()
             .any(|a| is_blind(a.action_type))
     {
         return Err(violation(hand, "blind posted after a straddle"));
     }
-    let straddle_count = posted
+    let straddlers: Vec<&str> = posted
         .iter()
         .filter(|a| a.action_type == ActionType::PostStraddle)
-        .count();
-    if straddle_count > 2 {
+        .map(|a| a.player_name.as_str())
+        .collect();
+    if straddlers.len() > 2 {
         return Err(violation(hand, "more than two straddles"));
     }
+    if straddlers.len() == 2 && straddlers.first() == straddlers.get(1) {
+        return Err(violation(hand, "a player straddles twice"));
+    }
 
-    let first_big_blind = &posted[first_big_blind_idx];
+    let Some(first_big_blind) = posted.get(first_big_blind_idx) else {
+        return Err(violation(hand, "no big blind posted"));
+    };
     let big_blind_seat = seat(&first_big_blind.player_name)?;
 
     let last_straddle = posted
@@ -2090,6 +2102,16 @@ mod tests {
         ];
         let h = scenario(&stacks5, 5, &small_double_raise, 0, &[("Hero", dec!(1.45))]);
         assert!(betting_error(&h).contains("illegal Raise to 0.7"));
+
+        // 6. A player cannot straddle twice (C re-straddles over their own straddle).
+        let straddles_twice = [
+            (Preflop, "A", PostSmallBlind, dec!(0.05)),
+            (Preflop, "B", PostBigBlind, dec!(0.1)),
+            (Preflop, "C", PostStraddle, dec!(0.2)),
+            (Preflop, "C", PostStraddle, dec!(0.2)),
+        ];
+        let h = scenario(&stacks, 4, &straddles_twice, 0, &[("C", dec!(0.55))]);
+        assert!(betting_error(&h).contains("a player straddles twice"));
     }
 
     #[test]

@@ -789,6 +789,15 @@ fn identify(conn: &Connection) -> Result<DatabaseKind, StorageError> {
     Err(StorageError::NotAPokerTrackerDatabase { detail })
 }
 
+/// [`identify`] inside one deferred read transaction (a consistent snapshot of the header and
+/// the schema).
+fn identify_snapshot(conn: &mut Connection) -> Result<DatabaseKind, StorageError> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Deferred)?;
+    let kind = identify(&tx)?;
+    tx.commit()?;
+    Ok(kind)
+}
+
 /// SQLite-backed repository managing schema initialization and batch ingestion.
 pub struct SqliteRepository {
     conn: Connection,
@@ -840,19 +849,18 @@ impl SqliteRepository {
     fn initialize(mut conn: Connection) -> Result<Self, StorageError> {
         conn.busy_timeout(DEFAULT_BUSY_TIMEOUT)?;
         let start = std::time::Instant::now();
-        // Identify the file before changing anything about it.
+        let busy = |e: &rusqlite::Error| {
+            e.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseBusy)
+                && start.elapsed() < DEFAULT_BUSY_TIMEOUT
+        };
+        // Identify the file before changing anything about it. The reads run in one read
+        // transaction, so they see a single committed state: a concurrent open that is
+        // migrating the file can never make it look foreign. Only a busy lock is retried.
         let current = loop {
-            match identify(&conn) {
+            match identify_snapshot(&mut conn) {
                 Ok(DatabaseKind::New) => break 0,
                 Ok(DatabaseKind::PokerTracker(version)) => break version,
-                Err(StorageError::Sqlite(rusqlite::Error::SqliteFailure(err, _)))
-                    if err.extended_code == 5 && start.elapsed() < DEFAULT_BUSY_TIMEOUT =>
-                {
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                Err(StorageError::NotAPokerTrackerDatabase { .. })
-                    if start.elapsed() < DEFAULT_BUSY_TIMEOUT =>
-                {
+                Err(StorageError::Sqlite(e)) if busy(&e) => {
                     std::thread::sleep(Duration::from_millis(5));
                 }
                 Err(e) => return Err(e),
@@ -865,13 +873,10 @@ impl SqliteRepository {
             });
         }
         loop {
+            // Switching to WAL can report a busy lock without calling the busy handler.
             match conn.execute_batch(PRAGMA_TUNING) {
                 Ok(()) => break,
-                Err(rusqlite::Error::SqliteFailure(err, _))
-                    if err.extended_code == 5 && start.elapsed() < DEFAULT_BUSY_TIMEOUT =>
-                {
-                    std::thread::sleep(Duration::from_millis(5));
-                }
+                Err(e) if busy(&e) => std::thread::sleep(Duration::from_millis(5)),
                 Err(e) => return Err(StorageError::Sqlite(e)),
             }
         }

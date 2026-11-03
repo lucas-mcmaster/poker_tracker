@@ -16,7 +16,8 @@ Derived from `docs/BLUEPRINT.md` §8 with updates from the v3.6 specification (`
   `BettingLimit` variants, and chips rather than currency.
 - **EV Cashout.** *EV Cashout* is supported on both sides (`EvCashoutRiskPaid`,
   `EvCashoutReceived`). A cashout in a split or multi-run pot has not been observed and is
-  quarantined with `UnsupportedAdjustment`.
+  quarantined with `UnsupportedAdjustment`. The split-pot test is "more than one payout line",
+  so a cashout hand in which one player collects a main and a side pot is quarantined too.
 - **All-in blinds for less than the stake.** The validator accepts them, but most sites make
   the others call the full big blind, which the replay does not model; the GGPoker parser
   refuses such hands until a real sample shows how GGPoker prints them. A blind of exactly the
@@ -25,7 +26,10 @@ Derived from `docs/BLUEPRINT.md` §8 with updates from the v3.6 specification (`
   bounds what each player can win, but main and side pot amounts, if ever needed, must be
   computed from contributions.
 - **Not yet observed on GGPoker** (rejected until a sample is added):
-  - antes, bomb pots, all-in or short straddles, three or more straddles;
+  - antes, bomb pots, all-in or short straddles, three or more straddles, a second straddle
+    by the same player, heads-up straddles;
+  - heads-up hands with a missed or dead blind, or where the button does not post the small
+    blind;
   - `mucks hand`, seat-change and sit-out lines;
   - non-`$` stakes;
   - Omaha and other limits.

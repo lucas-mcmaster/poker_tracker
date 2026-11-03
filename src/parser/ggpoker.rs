@@ -464,6 +464,8 @@ struct HandState {
     dealt_seats: Vec<u8>,
     /// Set by the first preflop line after the `Dealt to` lines.
     dealing_done: bool,
+    /// `(small blind, big blind)` from the header.
+    stakes: (Decimal, Decimal),
     summary: SummaryFacts,
 }
 
@@ -558,6 +560,16 @@ impl HandState {
                     reason: "amount must be positive".to_string(),
                 });
             }
+            // Never observed (spec s9): a missed blind in a heads-up hand, and a live blind
+            // for less than the stake (an all-in blind; GGPoker's format for it is unknown).
+            let stake = match cap(&caps, "kind") {
+                "small blind" => Some(self.stakes.0),
+                "big blind" => Some(self.stakes.1),
+                _ => None,
+            };
+            if (stake.is_none() && self.players.len() == 2) || stake.is_some_and(|s| amount < s) {
+                return Err(unrecognized());
+            }
             let current = self
                 .street_commitments
                 .get(name)
@@ -623,6 +635,21 @@ impl HandState {
             }
             let name = cap(&caps, "name");
             self.ensure_seated(name)?;
+            // Never observed: a heads-up straddle, or a player straddling twice.
+            if self.players.len() == 2
+                || self
+                    .actions
+                    .iter()
+                    .any(|a| a.player_name == name && a.action_type == ActionType::PostStraddle)
+            {
+                return Err(ParseError::IllegalAction {
+                    line: line_idx,
+                    content: line.to_string(),
+                    reason: "straddle shape never observed (heads-up, or a second straddle by \
+                             the same player)"
+                        .to_string(),
+                });
+            }
             let total_after = parse_decimal(cap(&caps, "amt"))?;
             let current = self
                 .street_commitments
@@ -673,6 +700,14 @@ impl HandState {
             let is_all_in = self.players.iter().any(|p| {
                 p.name == name && posted_before.checked_add(increment) == Some(p.starting_stack)
             });
+            // All-in straddles are out of scope until a real sample shows how GGPoker prints one.
+            if is_all_in {
+                return Err(ParseError::IllegalAction {
+                    line: line_idx,
+                    content: line.to_string(),
+                    reason: "all-in straddle never observed".to_string(),
+                });
+            }
             self.street_commitments
                 .insert(name.to_string(), total_after);
             return self.push_action(
@@ -1125,11 +1160,19 @@ impl HandState {
             detail,
         };
 
-        // Record known cards from ShowedUncontested before cross-checks.
+        // Record known cards from ShowedUncontested before cross-checks. An opponent's summary
+        // show must repeat every card they already showed in the body (Hero's summary may show
+        // one of the two dealt cards).
         for player in &mut self.players {
             if let Some(seat_sum) = self.summary.seat_summaries.get(&player.seat)
                 && let SeatResult::ShowedUncontested { cards, .. } = &seat_sum.result
             {
+                if !player.is_hero && !player.known_cards().all(|k| cards.contains(&k)) {
+                    return Err(mismatch(format!(
+                        "summary show for '{}' omits a card shown in the body",
+                        player.name
+                    )));
+                }
                 for card in cards {
                     if !player.record_known_card(*card) {
                         return Err(ParseError::ConflictingHoleCards {
@@ -1301,6 +1344,12 @@ impl HandState {
                 .iter()
                 .any(|a| a.action_type == ActionType::PostSmallBlind);
             let heads_up = self.players.len() == 2;
+            if heads_up && (p.seat == header.button_seat) != posted_small {
+                return Err(mismatch(format!(
+                    "heads-up button and small blind poster differ ('{}')",
+                    p.name
+                )));
+            }
             let expect_button = p.seat == header.button_seat && !(heads_up && posted_small);
             if seat_line.button != expect_button
                 || seat_line.small_blind != posted_small
@@ -1324,20 +1373,23 @@ impl HandState {
                     folded_on.is_none() && !contested && (*verb == PayoutVerb::Won) == flop_dealt
                 }
                 SeatResult::Showed {
-                    cards, outcomes, ..
+                    cards,
+                    outcomes,
+                    all_lost,
                 } => {
                     let mut shown = cards.clone();
                     let mut known: Vec<Card> = p.known_cards().collect();
                     shown.sort_unstable();
                     known.sort_unstable();
-                    folded_on.is_none() && shown.len() == 2 && shown == known && *outcomes == runs
+                    // `won` (the only payout verb this shape allows) needs a flop.
+                    folded_on.is_none()
+                        && shown.len() == 2
+                        && shown == known
+                        && *outcomes == runs
+                        && (*all_lost || flop_dealt)
                 }
                 SeatResult::ShowedUncontested { cards, verb } => {
-                    let no_dups = if cards.len() == 2 {
-                        cards[0] != cards[1]
-                    } else {
-                        true
-                    };
+                    let no_dups = !matches!(cards.as_slice(), [a, b] if a == b);
                     folded_on.is_none()
                         && !contested
                         && runs == 1
@@ -1557,7 +1609,10 @@ impl HandParser for GgPokerParser {
         };
 
         // --- Body --------------------------------------------------------------------------
-        let mut state = HandState::default();
+        let mut state = HandState {
+            stakes: (header.small_blind, header.big_blind),
+            ..HandState::default()
+        };
         let mut phase = ParserPhase::SeatingAndBlinds;
         let mut last_line_idx = 2;
 
