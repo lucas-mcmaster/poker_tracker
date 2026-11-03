@@ -646,6 +646,9 @@ currency,stakes,hands,net,net_per_100,bb_won,bb_per_100,rake,fees,blinds,straddl
 CAD,0.05/0.1,989,-25.79,-2.61,-257.90,-26.08,14.23115,2.500423,29.25,0,9,-19.396794,-19.61
 ```
 
+v3.5 file imported alone, `results` row:
+`CAD,0.05/0.1,294,2.86,0.97,28.60,9.73,2.195316,0.353832,8.3,0,3,2.48105,8.44`.
+
 The `sessions` report gains `ev_net` as its last column
 (`currency,platform,table,start,end,duration_seconds,hands,net,bb_per_100,ev_net`); its values for
 the ten sessions, in the order of §6, are `7.75, -17.550556, 2.584565, 0.91822, -1.744907, 9.41,
@@ -726,10 +729,12 @@ with `tools/oracles/v3_7_oracle.py`.
 
 ## 12. Amendments after M15 (Nov 3, 2026)
 
-Made after the M15 review, by the owner's decision. `STATS_VERSION` stays 3: sessions are
-computed at report time and nothing in the cache changes. No pinned number changes (GGPoker
-states no UTC offset), and `tools/oracles/v3_7_oracle.py` applies the same rule.
+Made after the M15 review; the sessions rule is the owner's decision. `STATS_VERSION` stays 3:
+both rules concern figures computed at report time, and nothing in the cache changes. No pinned
+number changes (GGPoker states no UTC offset, and every corpus big blind is 0.10); one is added,
+the v3.5 `results` row with the M16 columns. `tools/oracles/v3_7_oracle.py` applies both rules.
 
 | Change | Why | Where |
 | --- | --- | --- |
 | Sessions use one time basis per table: UTC when every selected hand of the table states an offset, otherwise the timestamps as printed. Hands are ordered, gaps measured and durations taken on that basis; sessions are listed by their printed `start`, so the rows follow the column the reader sees | The old rule ordered by printed timestamp but measured in UTC pair by pair. That contradicted its own daylight-saving test (ordering by printed time puts `01:10` before `01:50`), and a table mixing hands with and without an offset gave a negative duration (`10:00` at `-4 h` then `10:05` with none: `-300`) | `stats.md` §6.1; M15.4 `sessions` row; M15.5 sessions tests; M15 Docs; decision 11 |
+| `ev_bb_per_100` is `bb/100` from `ev_net_micros`, summed per big-blind value like `bb_won` (the old text said "per hand"); the v3.5 `results` row with the M16 columns is pinned | The M15 fix-up makes every `bb_won` divide once per big-blind value (dividing hand by hand can round a half-even midpoint the wrong way); M16's golden test of the v3.5 row needs a pinned value | `stats.md` §6.2; §7.5; `tools/oracles/v3_7_oracle.py` prints the v3.5 row |

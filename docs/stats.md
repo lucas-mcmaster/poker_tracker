@@ -310,8 +310,9 @@ itself uses.
 A player who took **EV Cashout** keeps their actual net: GGPoker already insured their result, so
 it carries no all-in luck. Their opponents are adjusted normally.
 
-**Report figures:** `ev_net` = `Σ ev_net_micros`; `ev_bb_per_100` uses `ev_net / big_blind`
-per hand as for `bb/100`; `allin_hands` = number of player-hands with `ev_qualified = 1`.
+**Report figures:** `ev_net` = `Σ ev_net_micros`; `ev_bb_per_100` is `bb/100` computed from
+`ev_net_micros` instead of `net_micros` (§6.1: summed per big-blind value, divided once per
+value, then added); `allin_hands` = number of player-hands with `ev_qualified = 1`.
 
 ---
 

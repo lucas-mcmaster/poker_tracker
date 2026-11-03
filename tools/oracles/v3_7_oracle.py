@@ -729,6 +729,7 @@ def main():
         print(f"  {f[:24]:<24} qualifying={len(qq)} hero_in={hin} net={money(sum(hero(h)['net'] for h in hs))}"
               f" ev_net={money(sum(ev_net(h, all_in_ev(h))[hero(h)['name']] for h in hs))}")
     print("  " + results_row(v36, True))
+    print("  v3.5 file: " + results_row(v35, True))
     print("  sessions ev_net: " + ", ".join(
         money(sum(ev_net(h, all_in_ev(h))[hero(h)["name"]] for h in s)) for s, _ in sess))
 
