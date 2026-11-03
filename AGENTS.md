@@ -79,8 +79,10 @@ If two sources disagree, stop and report the difference. Do not pick one.
    how re-imports are recognised; never change them.
 10. **Derived data is a cache.** `hand_player_stats` is computed only from stored canonical
     hands, is versioned by `STATS_VERSION` (outside `MIGRATIONS`), is rebuilt when that version
-    changes, and is never read by validation, ingestion or duplicate detection. Changing any
-    definition in `docs/stats.md` bumps `STATS_VERSION` in the same commit.
+    changes, and is never read by validation, ingestion or duplicate detection. Changing the
+    definition of any stored column in `docs/stats.md` (position, counter, money or equity
+    column) bumps `STATS_VERSION` in the same commit; figures computed at report time (stat
+    ratios, `bb_won`, `bb/100`, sessions) do not.
 
 ## 4. How to work
 
