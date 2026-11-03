@@ -15,6 +15,13 @@ History only, never a specification. The current spec and living rules are liste
 
 ## v3.6.1 → v3.7 (in progress)
 
+- **M14 (Opportunity counters):**
+  - Schema version bumped (`STATS_VERSION = 2`, 68 cache columns).
+  - Preflop opportunity and action counters: `p_rfi_opp`/`p_rfi`, `p_3bet_opp`/`p_3bet`, `p_3bet_faced`/`_fold`/`_call`, `p_4bet_opp`/`p_4bet`, `p_4bet_faced`/`_fold`/`_call`, `p_cc_opp`/`p_cc`, `p_steal_opp`/`p_steal`, `p_sb_steal_faced`/`_fold`/`_raise`, `p_bb_steal_faced`/`_fold`/`_raise`.
+  - Postflop opportunity and action counters: `f_cbet_opp`/`f_cbet`, `f_cbet_faced`/`_fold`/`_call`/`_raise`, `t_cbet_opp`/`t_cbet`, `t_cbet_faced`/`_fold`/`_call`/`_raise`, `f_xr_opp`/`f_xr`.
+  - Macro-generated column definitions, field mappings, and infallible `get()` lookup.
+  - Canonical unit tests for all opportunity rules and near misses; full assertions for the 3 worked examples across all 68 columns; whole-folder pinned table validation (Hero, 989 hands).
+
 - **M13 (Derived statistics cache, positions and basic facts):**
   - Schema migration 3 adds `derived_cache` metadata table (`version = 1`, `STATS_VERSION = 1`).
   - Derived cache table `hand_player_stats` automatically populated on insert savepoint and rebuilt on database open under `BEGIN IMMEDIATE` if cache is absent or stale.

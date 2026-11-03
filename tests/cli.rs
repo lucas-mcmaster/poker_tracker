@@ -159,8 +159,9 @@ fn rebuild_stats_cli_paths_and_errors() {
 
     let (code, out, err) = run(cwd.path(), &["--rebuild-stats"]);
     assert_eq!(code, 0, "stderr: {err}");
-    assert!(
-        out.contains("Rebuilt statistics for 2 hand(s) (stats version 1)"),
-        "stdout was: {out}"
+    let expected_msg = format!(
+        "Rebuilt statistics for 2 hand(s) (stats version {})",
+        poker_tracker::stats::STATS_VERSION
     );
+    assert!(out.contains(&expected_msg), "stdout was: {out}");
 }

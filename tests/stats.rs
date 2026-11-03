@@ -19,14 +19,14 @@ use common::{
 use poker_tracker::domain::{ActionType, CommunityCards, Player, Street};
 use poker_tracker::parser::HandParser;
 use poker_tracker::stats::{
-    COLUMNS, STATS_VERSION, assign_positions, derive_hand_stats, position_label,
+    COLUMNS, PlayerHandStats, STATS_VERSION, assign_positions, derive_hand_stats, position_label,
 };
 use support::{make_action, make_canonical_hand, make_player};
 
 #[test]
 fn positions_across_table_sizes_and_layouts() {
-    assert_eq!(STATS_VERSION, 1);
-    assert_eq!(COLUMNS.len(), 32);
+    assert_eq!(STATS_VERSION, 2);
+    assert_eq!(COLUMNS.len(), 68);
 
     // 6 players: seats 1..=6, button 1, SB seat 2, BB seat 3
     let p6: Vec<Player> = (1..=6)
@@ -948,6 +948,26 @@ fn real_walks_from_fixtures() {
 fn worked_examples_from_stats_spec() {
     let parser = gg();
 
+    fn assert_exact_non_zero(stats: &PlayerHandStats, expected: &[(&str, i64)]) {
+        let expected_map: HashMap<&str, i64> = expected.iter().copied().collect();
+        for &col in COLUMNS {
+            let val = stats.get(col).unwrap();
+            if let Some(&exp) = expected_map.get(col) {
+                assert_eq!(
+                    val, exp,
+                    "player {} column {} expected {} got {}",
+                    stats.player_name, col, exp, val
+                );
+            } else {
+                assert_eq!(
+                    val, 0,
+                    "player {} column {} expected 0 got {}",
+                    stats.player_name, col, val
+                );
+            }
+        }
+    }
+
     // Worked Example 1: HD140650557 (SUMMARY_SHOW_TWO_CARDS)
     let h1 = parser.parse_hand(SUMMARY_SHOW_TWO_CARDS).unwrap();
     let s1 = derive_hand_stats(&h1);
@@ -955,50 +975,82 @@ fn worked_examples_from_stats_spec() {
 
     let co = &map1["6570ba77"];
     assert_eq!(co.position, Some(1));
-    assert_eq!(co.hands, 1);
-    assert_eq!(co.p_pfr_opp, 1);
-    assert_eq!(co.p_folds, 1);
-    assert_eq!(co.p_vpip, 0);
-    assert_eq!(co.p_pfr, 0);
+    assert_exact_non_zero(
+        co,
+        &[
+            ("hands", 1),
+            ("p_pfr_opp", 1),
+            ("p_folds", 1),
+            ("p_rfi_opp", 1),
+            ("p_steal_opp", 1),
+        ],
+    );
 
     let btn = &map1["4af6a555"];
     assert_eq!(btn.position, Some(0));
-    assert_eq!(btn.hands, 1);
-    assert_eq!(btn.p_pfr_opp, 1);
-    assert_eq!(btn.p_folds, 1);
-    assert_eq!(btn.p_vpip, 0);
+    assert_exact_non_zero(
+        btn,
+        &[
+            ("hands", 1),
+            ("p_pfr_opp", 1),
+            ("p_folds", 1),
+            ("p_rfi_opp", 1),
+            ("p_steal_opp", 1),
+        ],
+    );
 
     let hero = &map1["Hero"];
     assert_eq!(hero.position, Some(9));
-    assert_eq!(hero.hands, 1);
-    assert_eq!(hero.p_vpip, 1);
-    assert_eq!(hero.p_pfr_opp, 1);
-    assert_eq!(hero.p_pfr, 1);
-    assert_eq!(hero.p_raises, 1);
-    assert_eq!(hero.f_saw, 1);
-    assert_eq!(hero.f_bets, 1);
-    assert_eq!(hero.f_calls, 1);
-    assert_eq!(hero.t_saw, 1);
-    assert_eq!(hero.t_checks, 1);
-    assert_eq!(hero.t_calls, 1);
-    assert_eq!(hero.r_saw, 1);
-    assert_eq!(hero.r_checks, 1);
-    assert_eq!(hero.r_folds, 1);
+    assert_exact_non_zero(
+        hero,
+        &[
+            ("hands", 1),
+            ("p_vpip", 1),
+            ("p_pfr_opp", 1),
+            ("p_pfr", 1),
+            ("p_raises", 1),
+            ("p_rfi_opp", 1),
+            ("p_rfi", 1),
+            ("p_steal_opp", 1),
+            ("p_steal", 1),
+            ("f_saw", 1),
+            ("f_cbet_opp", 1),
+            ("f_cbet", 1),
+            ("f_bets", 1),
+            ("f_calls", 1),
+            ("t_saw", 1),
+            ("t_cbet_opp", 1),
+            ("t_checks", 1),
+            ("t_calls", 1),
+            ("r_saw", 1),
+            ("r_checks", 1),
+            ("r_folds", 1),
+        ],
+    );
 
     let bb = &map1["2d5ce8a9"];
     assert_eq!(bb.position, Some(8));
-    assert_eq!(bb.hands, 1);
-    assert_eq!(bb.p_vpip, 1);
-    assert_eq!(bb.p_pfr_opp, 1);
-    assert_eq!(bb.p_calls, 1);
-    assert_eq!(bb.f_saw, 1);
-    assert_eq!(bb.f_raises, 1);
-    assert_eq!(bb.t_saw, 1);
-    assert_eq!(bb.t_bets, 1);
-    assert_eq!(bb.r_saw, 1);
-    assert_eq!(bb.r_bets, 1);
-    assert_eq!(bb.won_hand, 1);
-    assert_eq!(bb.f_saw_won, 1);
+    assert_exact_non_zero(
+        bb,
+        &[
+            ("hands", 1),
+            ("p_vpip", 1),
+            ("p_pfr_opp", 1),
+            ("p_calls", 1),
+            ("p_3bet_opp", 1),
+            ("p_bb_steal_faced", 1),
+            ("f_saw", 1),
+            ("f_cbet_faced", 1),
+            ("f_cbet_raise", 1),
+            ("f_raises", 1),
+            ("t_saw", 1),
+            ("t_bets", 1),
+            ("r_saw", 1),
+            ("r_bets", 1),
+            ("won_hand", 1),
+            ("f_saw_won", 1),
+        ],
+    );
 
     // Worked Example 2: HD145385563 (STRADDLE_UTG_OPTION)
     let h2 = parser.parse_hand(STRADDLE_UTG_OPTION).unwrap();
@@ -1007,47 +1059,50 @@ fn worked_examples_from_stats_spec() {
 
     let sb2 = &map2["494b476f"];
     assert_eq!(sb2.position, Some(9));
-    assert_eq!(sb2.hands, 1);
-    assert_eq!(sb2.p_pfr_opp, 1);
-    assert_eq!(sb2.p_folds, 1);
+    assert_exact_non_zero(sb2, &[("hands", 1), ("p_pfr_opp", 1), ("p_folds", 1)]);
 
     let bb2 = &map2["c89b4da3"];
     assert_eq!(bb2.position, Some(8));
-    assert_eq!(bb2.hands, 1);
-    assert_eq!(bb2.p_pfr_opp, 1);
-    assert_eq!(bb2.p_folds, 1);
+    assert_exact_non_zero(bb2, &[("hands", 1), ("p_pfr_opp", 1), ("p_folds", 1)]);
 
     let straddler = &map2["5daacec9"];
     assert_eq!(straddler.position, Some(3)); // EP
-    assert_eq!(straddler.hands, 1);
-    assert_eq!(straddler.p_pfr_opp, 1);
-    assert_eq!(straddler.p_checks, 1);
-    assert_eq!(straddler.f_saw, 1);
-    assert_eq!(straddler.f_bets, 1);
-    assert_eq!(straddler.f_folds, 1);
+    assert_exact_non_zero(
+        straddler,
+        &[
+            ("hands", 1),
+            ("p_pfr_opp", 1),
+            ("p_checks", 1),
+            ("f_saw", 1),
+            ("f_bets", 1),
+            ("f_folds", 1),
+        ],
+    );
 
     let mp = &map2["adbf678c"];
     assert_eq!(mp.position, Some(2)); // MP
-    assert_eq!(mp.hands, 1);
-    assert_eq!(mp.p_vpip, 1);
-    assert_eq!(mp.p_pfr_opp, 1);
-    assert_eq!(mp.p_calls, 1);
-    assert_eq!(mp.f_saw, 1);
-    assert_eq!(mp.f_raises, 1);
-    assert_eq!(mp.won_hand, 1);
-    assert_eq!(mp.f_saw_won, 1);
+    assert_exact_non_zero(
+        mp,
+        &[
+            ("hands", 1),
+            ("p_vpip", 1),
+            ("p_pfr_opp", 1),
+            ("p_calls", 1),
+            ("p_rfi_opp", 1),
+            ("f_saw", 1),
+            ("f_raises", 1),
+            ("won_hand", 1),
+            ("f_saw_won", 1),
+        ],
+    );
 
     let hero2 = &map2["Hero"];
     assert_eq!(hero2.position, Some(1)); // CO
-    assert_eq!(hero2.hands, 1);
-    assert_eq!(hero2.p_pfr_opp, 1);
-    assert_eq!(hero2.p_folds, 1);
+    assert_exact_non_zero(hero2, &[("hands", 1), ("p_pfr_opp", 1), ("p_folds", 1)]);
 
     let btn2 = &map2["4e268376"];
     assert_eq!(btn2.position, Some(0)); // BTN
-    assert_eq!(btn2.hands, 1);
-    assert_eq!(btn2.p_pfr_opp, 1);
-    assert_eq!(btn2.p_folds, 1);
+    assert_exact_non_zero(btn2, &[("hands", 1), ("p_pfr_opp", 1), ("p_folds", 1)]);
 
     // Worked Example 3: HD140650645 (first hand of SAMPLE_SESSION)
     let first_sample_hand = parser
@@ -1061,38 +1116,56 @@ fn worked_examples_from_stats_spec() {
 
     let bb3 = &map3["4af6a555"];
     assert_eq!(bb3.position, Some(8));
-    assert_eq!(bb3.hands, 1);
-    assert_eq!(bb3.p_pfr_opp, 1);
-    assert_eq!(bb3.p_checks, 1);
-    assert_eq!(bb3.f_saw, 1);
-    assert_eq!(bb3.f_checks, 1);
-    assert_eq!(bb3.t_saw, 1);
-    assert_eq!(bb3.t_checks, 1);
-    assert_eq!(bb3.r_saw, 1);
-    assert_eq!(bb3.r_checks, 1);
-    assert_eq!(bb3.sd_went, 1);
-    assert_eq!(bb3.sd_won, 0);
+    assert_exact_non_zero(
+        bb3,
+        &[
+            ("hands", 1),
+            ("p_pfr_opp", 1),
+            ("p_checks", 1),
+            ("f_saw", 1),
+            ("f_checks", 1),
+            ("t_saw", 1),
+            ("t_checks", 1),
+            ("r_saw", 1),
+            ("r_checks", 1),
+            ("sd_went", 1),
+        ],
+    );
 
     let hero3 = &map3["Hero"];
     assert_eq!(hero3.position, Some(0)); // BTN
-    assert_eq!(hero3.hands, 1);
-    assert_eq!(hero3.p_pfr_opp, 1);
-    assert_eq!(hero3.p_folds, 1);
+    assert_exact_non_zero(
+        hero3,
+        &[
+            ("hands", 1),
+            ("p_pfr_opp", 1),
+            ("p_folds", 1),
+            ("p_rfi_opp", 1),
+            ("p_steal_opp", 1),
+        ],
+    );
 
     let sb3 = &map3["2d5ce8a9"];
     assert_eq!(sb3.position, Some(9)); // SB
-    assert_eq!(sb3.hands, 1);
-    assert_eq!(sb3.p_vpip, 1);
-    assert_eq!(sb3.p_pfr_opp, 1);
-    assert_eq!(sb3.p_calls, 1);
-    assert_eq!(sb3.f_saw, 1);
-    assert_eq!(sb3.f_checks, 1);
-    assert_eq!(sb3.t_saw, 1);
-    assert_eq!(sb3.t_checks, 1);
-    assert_eq!(sb3.r_saw, 1);
-    assert_eq!(sb3.r_checks, 1);
-    assert_eq!(sb3.sd_went, 1);
-    assert_eq!(sb3.sd_won, 1);
-    assert_eq!(sb3.won_hand, 1);
-    assert_eq!(sb3.f_saw_won, 1);
+    assert_exact_non_zero(
+        sb3,
+        &[
+            ("hands", 1),
+            ("p_vpip", 1),
+            ("p_pfr_opp", 1),
+            ("p_calls", 1),
+            ("p_rfi_opp", 1),
+            ("p_steal_opp", 1),
+            ("f_saw", 1),
+            ("f_checks", 1),
+            ("t_saw", 1),
+            ("t_checks", 1),
+            ("r_saw", 1),
+            ("r_checks", 1),
+            ("sd_went", 1),
+            ("sd_won", 1),
+            ("won_hand", 1),
+            ("f_saw_won", 1),
+        ],
+    );
 }

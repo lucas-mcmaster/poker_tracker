@@ -190,3 +190,16 @@ are in `docs/stats.md`; the lifecycle contract is `docs/SPEC_v3.7.md` §2.
   exactly one small blind is posted, and (3+ players) the SB is the first player clockwise after
   the button and the BB the first player clockwise after the SB, or (heads-up) the button is the
   SB. Otherwise every player in the hand gets `NULL`.
+
+
+### Opportunity counters (`docs/stats.md` §3, §4.1–§4.2)
+
+- **State at a decision:** computed by replaying the street up to, not including, the decision.
+- **Single evaluation per player-hand:** opportunities are counted at the player's first
+  qualifying decision, with two exceptions: `p_4bet_fold` counts any fold at `raises >= 3`,
+  and `p_pfr_opp` counts any decision with `can_raise`.
+- **Cold call:** `p_cc_opp` requires no money in the pot (no forced post of any kind).
+- **Steal:** `p_steal_opp` requires `p_rfi_opp`, seat position CO (1), BTN (0), or SB (9), and
+  the hand has no `PostStraddle`. Heads-up, the SB's open is a steal attempt that the BB faces.
+- **C-bets:** `f_cbet_faced` and `t_cbet_faced` require no `Raise` between the c-bet and the
+  decision; `t_cbet_opp` is available only to the player who made the flop c-bet.

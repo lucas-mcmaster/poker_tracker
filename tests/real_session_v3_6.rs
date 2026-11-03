@@ -487,3 +487,68 @@ fn hero_positions_and_m13_counters_match_pinned_tables() {
     assert_eq!(hero_sums_v35("won_hand"), 65);
     assert_eq!(hero_sums_v35("f_saw_won"), 28);
 }
+
+#[test]
+fn hero_m14_opportunity_counters_match_pinned_table() {
+    let fixtures_dir = Path::new("tests/fixtures/ggpoker/v3_6");
+    let ingester = DirectoryIngester::default();
+    let mut repo = SqliteRepository::open_in_memory().unwrap();
+
+    let report = ingester
+        .ingest_directory(fixtures_dir, &registry(), &mut repo)
+        .unwrap();
+    assert_eq!(report.hands_ingested, 989);
+
+    let hero_sum = |col: &str| -> i64 {
+        let sql = format!(
+            "SELECT SUM(hps.{col}) FROM hand_player_stats hps
+             JOIN hand_players hp ON hp.hand_id = hps.hand_id AND hp.player_id = hps.player_id
+             WHERE hp.is_hero = 1"
+        );
+        repo.connection().query_row(&sql, [], |r| r.get(0)).unwrap()
+    };
+
+    // Preflop opportunity counters (SPEC §5 pinned table)
+    assert_eq!(hero_sum("p_rfi_opp"), 474);
+    assert_eq!(hero_sum("p_rfi"), 144);
+    assert_eq!(hero_sum("p_3bet_opp"), 299);
+    assert_eq!(hero_sum("p_3bet"), 36);
+    assert_eq!(hero_sum("p_3bet_faced"), 41);
+    assert_eq!(hero_sum("p_3bet_fold"), 31);
+    assert_eq!(hero_sum("p_3bet_call"), 7);
+    assert_eq!(hero_sum("p_4bet_opp"), 46);
+    assert_eq!(hero_sum("p_4bet"), 4);
+    assert_eq!(hero_sum("p_4bet_faced"), 10);
+    assert_eq!(hero_sum("p_4bet_fold"), 4);
+    assert_eq!(hero_sum("p_4bet_call"), 5);
+    assert_eq!(hero_sum("p_cc_opp"), 109);
+    assert_eq!(hero_sum("p_cc"), 7);
+
+    // Steal and steal defence
+    assert_eq!(hero_sum("p_steal_opp"), 276);
+    assert_eq!(hero_sum("p_steal"), 89);
+    assert_eq!(hero_sum("p_sb_steal_faced"), 35);
+    assert_eq!(hero_sum("p_sb_steal_fold"), 25);
+    assert_eq!(hero_sum("p_sb_steal_raise"), 10);
+    assert_eq!(hero_sum("p_bb_steal_faced"), 46);
+    assert_eq!(hero_sum("p_bb_steal_fold"), 33);
+    assert_eq!(hero_sum("p_bb_steal_raise"), 2);
+
+    // Postflop opportunity counters (SPEC §5 pinned table)
+    assert_eq!(hero_sum("f_cbet_opp"), 106);
+    assert_eq!(hero_sum("f_cbet"), 52);
+    assert_eq!(hero_sum("f_cbet_faced"), 24);
+    assert_eq!(hero_sum("f_cbet_fold"), 13);
+    assert_eq!(hero_sum("f_cbet_call"), 9);
+    assert_eq!(hero_sum("f_cbet_raise"), 2);
+
+    assert_eq!(hero_sum("t_cbet_opp"), 22);
+    assert_eq!(hero_sum("t_cbet"), 10);
+    assert_eq!(hero_sum("t_cbet_faced"), 5);
+    assert_eq!(hero_sum("t_cbet_fold"), 0);
+    assert_eq!(hero_sum("t_cbet_call"), 5);
+    assert_eq!(hero_sum("t_cbet_raise"), 0);
+
+    assert_eq!(hero_sum("f_xr_opp"), 34);
+    assert_eq!(hero_sum("f_xr"), 6);
+}

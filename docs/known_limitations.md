@@ -5,8 +5,8 @@ Derived from `docs/BLUEPRINT.md` §8 with updates from the v3.6 specification (`
 
 ---
 
-- **Derived statistics.** The derived cache (M13) is implemented. Opportunity counters (M14),
-  results/sessions/reports (M15), all-in equity (M16), and filters (M17) remain deferred.
+- **Derived statistics.** The derived cache (M13) and opportunity counters (M14) are implemented.
+  Results/sessions/reports (M15), all-in equity (M16), and filters (M17) remain deferred.
 - An open that starts while another process rebuilds the statistics cache waits up to 5 s and
   then fails with a lock error; run it again;
 - A stored hand that cannot be loaded makes the cache rebuild, and therefore every open by a
