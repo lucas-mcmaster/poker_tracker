@@ -587,6 +587,8 @@ def main():
         print(f"  {k:<18} {t36[k]}")
 
     def results_row(hs, with_ev):
+        if not hs:
+            return "(no hands in this subset)"
         n = len(hs)
         net = sum(hero(h)["net"] for h in hs)
         bbw_num = sum(hero(h)["net"] * 1_000_000 // h["bb"] for h in hs)  # exact: stakes divide
