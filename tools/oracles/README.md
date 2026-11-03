@@ -28,6 +28,18 @@ python3 -m venv /tmp/oracle-venv && /tmp/oracle-venv/bin/pip install eval7
 rm -rf /tmp/oracle.sqlite* /tmp/oracle_extra /tmp/oracle-venv
 ```
 
+## `compare_cache.py` (reviewer check, M13–M16)
+
+Compares **every row** of a database's `hand_player_stats` with the oracle: each counter,
+`position`, the M15 money columns and, with `--equity`, the M16 `ev_*` columns, for every
+player-hand (not only Hero's totals). Columns the oracle does not know are listed. Exit status
+`0` when everything matches.
+
+```
+python3 -I tools/oracles/compare_cache.py /tmp/oracle.sqlite
+/tmp/oracle-venv/bin/python -I tools/oracles/compare_cache.py /tmp/oracle.sqlite --equity   # ~1 min
+```
+
 If its output and `docs/stats.md` disagree, the script has a bug; if it and the crate disagree,
 find which one departs from `docs/stats.md`.
 
