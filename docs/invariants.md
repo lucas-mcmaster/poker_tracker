@@ -142,10 +142,11 @@ Site-specific text format rules observed in real exports:
 
 ---
 
-## 3. Derived data (`src/stats/`, `hand_player_stats`)
+## 3. Derived data (`src/stats/`, `src/report/`, `hand_player_stats`)
 
-Rules for the derived statistics cache (v3.7, M13). Definitions of every counter and position
-are in `docs/stats.md`; the lifecycle contract is `docs/SPEC_v3.7.md` §2.
+Rules for the derived statistics cache (v3.7, M13–M15) and the reports built on it (M15).
+Definitions of every position, counter, money column and session are in `docs/stats.md`; the
+lifecycle contract is `docs/SPEC_v3.7.md` §2 and the report contract §6.
 
 ### Cache lifecycle
 
@@ -155,8 +156,10 @@ are in `docs/stats.md`; the lifecycle contract is `docs/SPEC_v3.7.md` §2.
   `position` code (0–9), and one `INTEGER NOT NULL CHECK (… >= 0)` column per entry of
   `stats::COLUMNS`, in that order. The table is created by the rebuild, never by `MIGRATIONS`.
 - **Versioning.** `derived_cache(name, version, built_at)` (migration 3) holds one row,
-  `name = 'hand_player_stats'`, with the `STATS_VERSION` the cache was built with. Changing any
-  definition in `docs/stats.md` bumps `STATS_VERSION` in the same commit.
+  `name = 'hand_player_stats'`, with the `STATS_VERSION` the cache was built with. As
+  `AGENTS.md` §3.10 says, changing the definition of any stored column (position, counter, money
+  or equity column) bumps `STATS_VERSION` in the same commit; figures computed at report time
+  (stat ratios, `bb_won`, `bb/100`, sessions) do not.
 - **Insert.** A newly stored hand's rows are written in its own savepoint; a duplicate writes
   none.
 - **Rebuild on open.** After migrations, if the `derived_cache` row is missing or its version
@@ -170,7 +173,9 @@ are in `docs/stats.md`; the lifecycle contract is `docs/SPEC_v3.7.md` §2.
 - **Version guard.** `insert_hands_batch` and `insert_sourced_hands_batch` re-read
   `derived_cache.version` under their write lock before any write. A missing or different
   version is `StorageError::StaleDerivedCache { found, expected }`: a batch-level error that
-  stores and quarantines nothing. They never rebuild by themselves.
+  stores and quarantines nothing. They never rebuild by themselves. `report::write_report` makes
+  the same check as the first read of its one read transaction and, on a mismatch, writes
+  nothing to its output.
 - **Delete.** Rows go with their hand (`ON DELETE CASCADE` on `hand_id`).
 
 ### Positions (`docs/stats.md` §2)
@@ -203,3 +208,45 @@ are in `docs/stats.md`; the lifecycle contract is `docs/SPEC_v3.7.md` §2.
   the hand has no `PostStraddle`. Heads-up, the SB's open is a steal attempt that the BB faces.
 - **C-bets:** `f_cbet_faced` and `t_cbet_faced` require no `Raise` between the c-bet and the
   decision; `t_cbet_opp` is available only to the player who made the flop c-bet.
+
+### Money (`docs/stats.md` §6.1)
+
+- `blinds_posted_micros` sums the player's `PostSmallBlind`, `PostBigBlind` and `PostDeadBlind`
+  amounts; `straddles_posted_micros` sums their `PostStraddle` amounts.
+- **Contributed method.** `rake_attributed_micros` splits the hand's `Rake` deductions, and
+  `fees_attributed_micros` one sum of all its other deductions (`Jackpot` and `Other`), among all
+  players in proportion to `invested`.
+- **Largest remainder.** Each player gets `floor(T × invested / W)` (`W` = the invested total =
+  `total_pot`), with `i128` products; the leftover micro-units go one each to the largest
+  remainders `(T × invested) mod W`, ties to the lower seat number. The parts sum exactly to the
+  hand's `Rake` and to its other deductions (a corpus test checks every hand). If `T` or `W` is
+  `0`, every part is `0`.
+
+### Reports (`src/report/`, `docs/SPEC_v3.7.md` §6)
+
+- **Hero only, per currency.** Every row covers the hero's hands in one currency; currencies are
+  listed alphabetically and amounts are never added across them.
+- **Integers in, `Decimal` out.** Only integer columns, integer `SUM`s and text columns are read
+  from SQLite, and nothing is divided in SQL. Ratios are computed with `Decimal`. Percents,
+  factors, `bb_won`, `bb/100` and `$/100` are rounded half-even to 2 decimals and printed with 2;
+  money is printed exactly, trailing zeros removed; a zero denominator prints an empty cell.
+- **`bb_won`** sums the net per big-blind value, divides once per value with `Decimal`, and adds
+  the quotients (`docs/stats.md` §6.1), in every report and row, `ALL` rows included. It is never
+  `Σ net / Σ big_blind`, and never divided hand by hand.
+- **Stakes selection.** Each `--stakes` amount is a positive plain decimal: ASCII digits with at
+  most one `.`, which has digits on both sides, at most 6 decimal places, surrounding spaces
+  ignored. Amounts are compared numerically with the stored blinds in every currency. A repeated
+  item counts once; an item that matches no hero hand is reported, not an error.
+- **Corrupt rows fail closed.** A stored timestamp that does not parse is
+  `StorageError::CorruptRow`, as when the hand is loaded; it never becomes a default value.
+
+### Sessions (`docs/stats.md` §6.1)
+
+- A session is a maximal run of the hero's hands at one table, the same `(platform, currency,
+  table_name)`, whose consecutive hands start at most 30 minutes apart (inclusive). Sessions are
+  computed at report time from the selected hands and never cached.
+- **One time basis per table:** UTC (timestamp minus `utc_offset_seconds`) when every selected
+  hand of the table states an offset, otherwise the timestamps as printed. Hands are ordered by
+  that time, then site hand id. Gaps and `duration_seconds` (first to last hand start, whole
+  seconds) use it, so neither is negative.
+- Sessions are listed by currency, `start` as printed, table, then platform.

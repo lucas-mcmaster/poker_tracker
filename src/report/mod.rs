@@ -6,7 +6,7 @@ pub mod results;
 pub mod sessions;
 pub mod stats;
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 use std::str::FromStr;
 
@@ -53,14 +53,18 @@ impl FromStr for Stakes {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts: Vec<&str> = s.split('/').collect();
-        if parts.len() != 2 {
+        let Some((sb_raw, bb_raw)) = s.split_once('/') else {
             return Err(format!("invalid stakes '{s}': expected <sb>/<bb>"));
-        }
-        let sb_str = parts[0].trim();
-        let bb_str = parts[1].trim();
+        };
+        let sb_str = sb_raw.trim();
+        let bb_str = bb_raw.trim();
         if sb_str.is_empty() || bb_str.is_empty() {
             return Err(format!("invalid stakes '{s}': empty blind amount"));
+        }
+        if !is_plain_decimal(sb_str) || !is_plain_decimal(bb_str) {
+            return Err(format!(
+                "invalid stakes '{s}': amounts must be plain decimals such as 0.05/0.1"
+            ));
         }
 
         let sb: Decimal = sb_str
@@ -86,6 +90,16 @@ impl FromStr for Stakes {
             small_blind_micros,
             big_blind_micros,
         })
+    }
+}
+
+/// True when `s` is ASCII digits with at most one `.`, which has digits on both sides. This
+/// rejects what `Decimal`'s parser would also take: signs, `_` separators and exponents.
+fn is_plain_decimal(s: &str) -> bool {
+    let all_digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    match s.split_once('.') {
+        None => all_digits(s),
+        Some((whole, fraction)) => all_digits(whole) && all_digits(fraction),
     }
 }
 
@@ -125,6 +139,33 @@ pub enum ReportError {
 impl From<rusqlite::Error> for ReportError {
     fn from(err: rusqlite::Error) -> Self {
         Self::Storage(StorageError::Sqlite(err))
+    }
+}
+
+/// Big blinds won over a set of hands (`docs/stats.md` §6.1): the net is summed per big-blind
+/// value and divided once per value, then the quotients are added. Dividing hand by hand would
+/// round each quotient that does not terminate (a big blind of 3) and could move a value off a
+/// half-even midpoint.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct BbWon {
+    net_by_big_blind: BTreeMap<i64, i64>,
+}
+
+impl BbWon {
+    /// Adds `net_micros` won at `big_blind_micros` (positive by the schema's `CHECK`).
+    pub(crate) fn add(&mut self, big_blind_micros: i64, net_micros: i64) {
+        let net = self.net_by_big_blind.entry(big_blind_micros).or_insert(0);
+        *net = net.saturating_add(net_micros);
+    }
+
+    /// `Σ net / big_blind` per big-blind value, added.
+    pub(crate) fn total(&self) -> Decimal {
+        self.net_by_big_blind
+            .iter()
+            .map(|(&big_blind_micros, &net_micros)| {
+                Decimal::from(net_micros) / Decimal::from(big_blind_micros)
+            })
+            .sum()
     }
 }
 

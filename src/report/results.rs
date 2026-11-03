@@ -6,7 +6,7 @@ use rusqlite::Transaction;
 use rust_decimal::Decimal;
 
 use super::format::{format_exact_money, format_fixed2};
-use super::{ReportError, Stakes};
+use super::{BbWon, ReportError, Stakes};
 
 pub const RESULTS_HEADER: &str =
     "currency,stakes,hands,net,net_per_100,bb_won,bb_per_100,rake,fees,blinds,straddles";
@@ -123,7 +123,8 @@ pub(crate) fn build_results_rows(
         let mut total_fees: i64 = 0;
         let mut total_blinds: i64 = 0;
         let mut total_straddles: i64 = 0;
-        let mut total_bb_won = Decimal::ZERO;
+        // The ALL row sums net per big blind, so two stakes with one big blind divide once.
+        let mut total_bb_won = BbWon::default();
 
         for g in &groups {
             total_hands = total_hands.saturating_add(g.hands);
@@ -136,7 +137,7 @@ pub(crate) fn build_results_rows(
             let net_dec = Decimal::new(g.net_micros, 6);
             let net_per_100_dec = (net_dec / Decimal::from(g.hands)) * Decimal::from(100);
             let bb_won_dec = Decimal::from(g.net_micros) / Decimal::from(g.big_blind_micros);
-            total_bb_won += bb_won_dec;
+            total_bb_won.add(g.big_blind_micros, g.net_micros);
 
             let bb_per_100_dec = (bb_won_dec / Decimal::from(g.hands)) * Decimal::from(100);
 
@@ -164,6 +165,7 @@ pub(crate) fn build_results_rows(
         if groups.len() > 1 && total_hands > 0 {
             let net_dec = Decimal::new(total_net, 6);
             let net_per_100_dec = (net_dec / Decimal::from(total_hands)) * Decimal::from(100);
+            let total_bb_won = total_bb_won.total();
             let bb_per_100_dec = (total_bb_won / Decimal::from(total_hands)) * Decimal::from(100);
 
             result_rows.push(ResultsRow {

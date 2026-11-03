@@ -16,15 +16,16 @@ History only, never a specification. The current spec and living rules are liste
 ## v3.6.1 → v3.7 (in progress)
 
 - **M15 (Results, sessions, and reports):**
-  - Schema version bumped (`STATS_VERSION = 3`, 72 cache columns) adding `rake_attributed_micros`, `fees_attributed_micros`, `blinds_posted_micros`, and `straddles_posted_micros`.
+  - Stats version bumped (`STATS_VERSION = 3`, 72 cache columns) adding `rake_attributed_micros`, `fees_attributed_micros`, `blinds_posted_micros`, and `straddles_posted_micros`.
   - Largest-remainder attribution for rake and other deductions using 128-bit integer arithmetic with lower-seat tie breaking; exact conservation verified over the corpus.
   - Report engine in `src/report/` generating four CSV reports (`results`, `positions`, `sessions`, `stats`) in a single read transaction protected by derived cache version guard.
   - Half-even midpoint rounding to 2 decimals for percentages, factors, and bb amounts; exact lossless decimal formatting for money columns.
-  - Table sessions formed by platform, table name, and currency with 30-minute inactivity boundary; UTC-offset/DST awareness for timestamps with stated offsets.
+  - Table sessions formed by platform, table name, and currency with 30-minute inactivity boundary; one time basis per table (UTC when every hand states an offset, otherwise as printed).
   - CLI flags `--report`, `--stakes`, and `--out` in `poker_tracker`; pure CSV output on stdout, status and missing stakes notes on stderr; non-destructive execution (never creates a database file).
+  - Review fix-up: the sessions report fails closed on a stored timestamp it cannot read (`CorruptRow`); sessions grouping is a tested function; `bb_won` divides once per big-blind value in every report (sessions divided hand by hand, which can round a half-even midpoint the wrong way); `--stakes` amounts must be plain decimals; worked-example money and the `ALL`, sessions and version-guard tests assert exact values; `docs/invariants.md` gains the M15 rules.
 
 - **M14 (Opportunity counters):**
-  - Schema version bumped (`STATS_VERSION = 2`, 68 cache columns).
+  - Stats version bumped (`STATS_VERSION = 2`, 68 cache columns).
   - Preflop opportunity and action counters: `p_rfi_opp`/`p_rfi`, `p_3bet_opp`/`p_3bet`, `p_3bet_faced`/`_fold`/`_call`, `p_4bet_opp`/`p_4bet`, `p_4bet_faced`/`_fold`/`_call`, `p_cc_opp`/`p_cc`, `p_steal_opp`/`p_steal`, `p_sb_steal_faced`/`_fold`/`_raise`, `p_bb_steal_faced`/`_fold`/`_raise`.
   - Postflop opportunity and action counters: `f_cbet_opp`/`f_cbet`, `f_cbet_faced`/`_fold`/`_call`/`_raise`, `t_cbet_opp`/`t_cbet`, `t_cbet_faced`/`_fold`/`_call`/`_raise`, `f_xr_opp`/`f_xr`.
   - Macro-generated column definitions, field mappings, and infallible `get()` lookup.

@@ -9,7 +9,7 @@ use crate::domain::{ActionType, CanonicalHand, DeductionKind, decimal_to_micro_u
 pub struct HandPlayerMoney {
     /// Contributed share of the hand's rake deductions.
     pub rake_attributed_micros: i64,
-    /// Contributed share of the hand's other deductions (jackpot, bingo, fortune, tax).
+    /// Contributed share of the hand's `Jackpot` and `Other` deductions.
     pub fees_attributed_micros: i64,
     /// Sum of posted small, big, and dead blinds.
     pub blinds_posted_micros: i64,

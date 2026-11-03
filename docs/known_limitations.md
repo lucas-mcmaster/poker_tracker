@@ -9,8 +9,8 @@ Derived from `docs/BLUEPRINT.md` §8 with updates from the v3.6 specification (`
   sessions, and reports (M15) are implemented. All-in equity (M16) and filters (M17) remain deferred.
 - **Session durations.** Session durations understate the time at the table by about one hand (hand
   histories record start times only). Elapsed times are measured on the timestamps as printed when
-  a site states no UTC offset (GGPoker), so a session that crosses a daylight-saving change is off
-  by an hour there.
+  a table's hands do not all state a UTC offset (GGPoker states none), so a session that crosses a
+  daylight-saving change is off by an hour there.
 - An open that starts while another process rebuilds the statistics cache waits up to 5 s and
   then fails with a lock error; run it again;
 - A stored hand that cannot be loaded makes the cache rebuild, and therefore every open by a

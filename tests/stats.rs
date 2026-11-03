@@ -951,9 +951,6 @@ fn worked_examples_from_stats_spec() {
     fn assert_exact_non_zero(stats: &PlayerHandStats, expected: &[(&str, i64)]) {
         let expected_map: HashMap<&str, i64> = expected.iter().copied().collect();
         for &col in COLUMNS {
-            if col.ends_with("_micros") {
-                continue;
-            }
             let val = stats.get(col).unwrap();
             if let Some(&exp) = expected_map.get(col) {
                 assert_eq!(
@@ -971,7 +968,8 @@ fn worked_examples_from_stats_spec() {
         }
     }
 
-    // Worked Example 1: HD140650557 (SUMMARY_SHOW_TWO_CARDS)
+    // Worked Example 1: HD140650557 (SUMMARY_SHOW_TWO_CARDS). Money (stats.md §7): Hero and the
+    // BB each invested $2.50, so rake $0.24 and jackpot $0.10 split equally between them.
     let h1 = parser.parse_hand(SUMMARY_SHOW_TWO_CARDS).unwrap();
     let s1 = derive_hand_stats(&h1);
     let map1: HashMap<String, _> = s1.into_iter().map(|s| (s.player_name.clone(), s)).collect();
@@ -1028,6 +1026,9 @@ fn worked_examples_from_stats_spec() {
             ("r_saw", 1),
             ("r_checks", 1),
             ("r_folds", 1),
+            ("rake_attributed_micros", 120_000), // $0.24 / 2
+            ("fees_attributed_micros", 50_000),  // $0.10 / 2
+            ("blinds_posted_micros", 50_000),    // posted the $0.05 SB
         ],
     );
 
@@ -1052,21 +1053,43 @@ fn worked_examples_from_stats_spec() {
             ("r_bets", 1),
             ("won_hand", 1),
             ("f_saw_won", 1),
+            ("rake_attributed_micros", 120_000), // $0.24 / 2
+            ("fees_attributed_micros", 50_000),  // $0.10 / 2
+            ("blinds_posted_micros", 100_000),   // posted the $0.10 BB
         ],
     );
 
-    // Worked Example 2: HD145385563 (STRADDLE_UTG_OPTION)
+    // Worked Example 2: HD145385563 (STRADDLE_UTG_OPTION). Money (stats.md §7): rake $0.04 by
+    // largest remainder over invested 0.05 / 0.10 / 0.39 / 0.39; the SB's remainder is largest.
     let h2 = parser.parse_hand(STRADDLE_UTG_OPTION).unwrap();
     let s2 = derive_hand_stats(&h2);
     let map2: HashMap<String, _> = s2.into_iter().map(|s| (s.player_name.clone(), s)).collect();
 
     let sb2 = &map2["494b476f"];
     assert_eq!(sb2.position, Some(9));
-    assert_exact_non_zero(sb2, &[("hands", 1), ("p_pfr_opp", 1), ("p_folds", 1)]);
+    assert_exact_non_zero(
+        sb2,
+        &[
+            ("hands", 1),
+            ("p_pfr_opp", 1),
+            ("p_folds", 1),
+            ("rake_attributed_micros", 2_151), // floor 2,150 + the leftover micro-unit
+            ("blinds_posted_micros", 50_000),  // posted the $0.05 SB
+        ],
+    );
 
     let bb2 = &map2["c89b4da3"];
     assert_eq!(bb2.position, Some(8));
-    assert_exact_non_zero(bb2, &[("hands", 1), ("p_pfr_opp", 1), ("p_folds", 1)]);
+    assert_exact_non_zero(
+        bb2,
+        &[
+            ("hands", 1),
+            ("p_pfr_opp", 1),
+            ("p_folds", 1),
+            ("rake_attributed_micros", 4_301), // floor(40,000 × 0.10 / 0.93)
+            ("blinds_posted_micros", 100_000), // posted the $0.10 BB
+        ],
+    );
 
     let straddler = &map2["5daacec9"];
     assert_eq!(straddler.position, Some(3)); // EP
@@ -1079,6 +1102,8 @@ fn worked_examples_from_stats_spec() {
             ("f_saw", 1),
             ("f_bets", 1),
             ("f_folds", 1),
+            ("rake_attributed_micros", 16_774), // floor(40,000 × 0.39 / 0.93)
+            ("straddles_posted_micros", 200_000), // posted the $0.20 straddle
         ],
     );
 
@@ -1096,6 +1121,7 @@ fn worked_examples_from_stats_spec() {
             ("f_raises", 1),
             ("won_hand", 1),
             ("f_saw_won", 1),
+            ("rake_attributed_micros", 16_774), // floor(40,000 × 0.39 / 0.93)
         ],
     );
 
@@ -1107,7 +1133,8 @@ fn worked_examples_from_stats_spec() {
     assert_eq!(btn2.position, Some(0)); // BTN
     assert_exact_non_zero(btn2, &[("hands", 1), ("p_pfr_opp", 1), ("p_folds", 1)]);
 
-    // Worked Example 3: HD140650645 (first hand of SAMPLE_SESSION)
+    // Worked Example 3: HD140650645 (first hand of SAMPLE_SESSION). Money: the SB and BB each
+    // invested $0.10, so the $0.01 rake splits 5,000 / 5,000.
     let first_sample_hand = parser
         .parse_session(SAMPLE_SESSION)
         .next()
@@ -1132,6 +1159,8 @@ fn worked_examples_from_stats_spec() {
             ("r_saw", 1),
             ("r_checks", 1),
             ("sd_went", 1),
+            ("rake_attributed_micros", 5_000), // $0.01 / 2
+            ("blinds_posted_micros", 100_000), // posted the $0.10 BB
         ],
     );
 
@@ -1169,6 +1198,8 @@ fn worked_examples_from_stats_spec() {
             ("sd_won", 1),
             ("won_hand", 1),
             ("f_saw_won", 1),
+            ("rake_attributed_micros", 5_000), // $0.01 / 2
+            ("blinds_posted_micros", 50_000),  // posted the $0.05 SB
         ],
     );
 }

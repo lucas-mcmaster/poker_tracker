@@ -6,7 +6,7 @@ use rusqlite::Transaction;
 use rust_decimal::Decimal;
 
 use super::format::{format_exact_money, format_fixed2, format_pct};
-use super::{ReportError, Stakes};
+use super::{BbWon, ReportError, Stakes};
 use crate::stats::position_label;
 
 pub const POSITIONS_HEADER: &str = "currency,position,hands,net,bb_per_100,vpip,pfr,rfi";
@@ -44,7 +44,7 @@ impl PositionsRow {
 struct PositionAgg {
     hands: i64,
     net_micros: i64,
-    bb_won: Decimal,
+    bb_won: BbWon,
     p_walk: i64,
     p_vpip: i64,
     p_pfr_opp: i64,
@@ -117,8 +117,7 @@ pub(crate) fn build_positions_rows(
 
         entry.hands = entry.hands.saturating_add(hands);
         entry.net_micros = entry.net_micros.saturating_add(net_micros);
-        let bb_won = Decimal::from(net_micros) / Decimal::from(bb_micros);
-        entry.bb_won += bb_won;
+        entry.bb_won.add(bb_micros, net_micros);
         entry.p_walk = entry.p_walk.saturating_add(p_walk);
         entry.p_vpip = entry.p_vpip.saturating_add(p_vpip);
         entry.p_pfr_opp = entry.p_pfr_opp.saturating_add(p_pfr_opp);
@@ -135,7 +134,8 @@ pub(crate) fn build_positions_rows(
                 if agg.hands <= 0 {
                     continue;
                 }
-                let bb_per_100_dec = (agg.bb_won / Decimal::from(agg.hands)) * Decimal::from(100);
+                let bb_per_100_dec =
+                    (agg.bb_won.total() / Decimal::from(agg.hands)) * Decimal::from(100);
                 let vpip_den = agg.hands.saturating_sub(agg.p_walk);
 
                 rows.push(PositionsRow {

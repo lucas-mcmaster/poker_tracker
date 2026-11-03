@@ -29,7 +29,7 @@ use crate::storage::schema::{APPLICATION_ID, MIGRATIONS, PRAGMA_TUNING, SCHEMA_V
 pub const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Timestamp format stored in `hands.timestamp` (fractional seconds only when present).
-const TIMESTAMP_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.f";
+pub(crate) const TIMESTAMP_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.f";
 
 /// Errors produced by the SQLite persistence layer.
 #[derive(Debug, Error)]

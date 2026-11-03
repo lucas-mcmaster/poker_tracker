@@ -142,6 +142,61 @@ fn golden_v3_5_results_row() {
     );
 }
 
+/// Heads-up hand in which Hero posts the small blind and folds to the big blind, so Hero's net
+/// is minus the small blind and `bb_won` is `-sb / bb`.
+fn hero_sb_folds(id: &str, sb: Decimal, bb: Decimal) -> CanonicalHand {
+    let p = vec![
+        make_player(1, "Hero", dec!(10), true),
+        make_player(2, "Villain", dec!(10), false),
+    ];
+    let a = vec![
+        make_action(
+            0,
+            Street::Preflop,
+            "Hero",
+            ActionType::PostSmallBlind,
+            sb,
+            sb,
+            false,
+        ),
+        make_action(
+            1,
+            Street::Preflop,
+            "Villain",
+            ActionType::PostBigBlind,
+            bb,
+            bb,
+            false,
+        ),
+        make_action(
+            2,
+            Street::Preflop,
+            "Hero",
+            ActionType::Fold,
+            dec!(0),
+            sb,
+            false,
+        ),
+    ];
+    let mut h = valid_hand(make_canonical_hand(1, p, a, vec![], vec![]));
+    h.header.site_hand_id = id.to_string();
+    h.header.small_blind = sb;
+    h.header.big_blind = bb;
+    h
+}
+
+fn report_text(repo: &SqliteRepository, kind: ReportKind, options: &ReportOptions) -> String {
+    let mut buf = Vec::new();
+    write_report(repo, kind, options, &mut buf).unwrap();
+    String::from_utf8(buf).unwrap()
+}
+
+fn stakes_options(items: &[&str]) -> ReportOptions {
+    ReportOptions {
+        stakes: Some(items.iter().map(|s| Stakes::from_str(s).unwrap()).collect()),
+    }
+}
+
 #[test]
 fn stakes_synthetic_and_parsing() {
     // Malformed stakes rejected by Stakes::from_str
@@ -155,6 +210,11 @@ fn stakes_synthetic_and_parsing() {
         "0/0.1",
         "0.05/0",
         "",
+        "1_0/2_0",
+        "1e-2/0.1",
+        "+0.05/0.1",
+        ".05/.1",
+        "0.05/0.1/0.2",
     ] {
         assert!(
             Stakes::from_str(malformed).is_err(),
@@ -165,94 +225,40 @@ fn stakes_synthetic_and_parsing() {
     // Valid stakes formatting and Display
     let s = Stakes::from_str("0.05/0.10").unwrap();
     assert_eq!(s.to_string(), "0.05/0.1");
+    assert_eq!(
+        Stakes::from_str(" 0.1 / 0.25 ").unwrap().to_string(),
+        "0.1/0.25"
+    );
 
-    let p = vec![
-        make_player(1, "Hero", dec!(10), true),
-        make_player(2, "Villain", dec!(10), false),
-    ];
-    let a = vec![
-        make_action(
-            0,
-            Street::Preflop,
-            "Hero",
-            ActionType::PostSmallBlind,
-            dec!(0.05),
-            dec!(0.05),
-            false,
-        ),
-        make_action(
-            1,
-            Street::Preflop,
-            "Villain",
-            ActionType::PostBigBlind,
-            dec!(0.10),
-            dec!(0.10),
-            false,
-        ),
-        make_action(
-            2,
-            Street::Preflop,
-            "Hero",
-            ActionType::Fold,
-            dec!(0),
-            dec!(0.05),
-            false,
-        ),
-    ];
-
-    // Hand 1: CAD 0.05/0.10
-    let mut h1 = valid_hand(make_canonical_hand(1, p.clone(), a.clone(), vec![], vec![]));
-    h1.header.site_hand_id = "H1".to_string();
+    // Hero folds the small blind in every hand. The two CAD stakes have different `bb_won` per
+    // hand (-0.5 and -0.4) and different hand counts (2 and 1), so an ALL row computed as
+    // Σ net / Σ bb, or as the mean of the stakes rows, would differ from the correct one.
+    let mut h1 = hero_sb_folds("H1", dec!(0.05), dec!(0.10));
     h1.header.currency = CurrencyCode::CAD;
-    h1.header.small_blind = dec!(0.05);
-    h1.header.big_blind = dec!(0.10);
-
-    // Hand 2: CAD 0.10/0.20
-    let a2 = vec![
-        make_action(
-            0,
-            Street::Preflop,
-            "Hero",
-            ActionType::PostSmallBlind,
-            dec!(0.10),
-            dec!(0.10),
-            false,
-        ),
-        make_action(
-            1,
-            Street::Preflop,
-            "Villain",
-            ActionType::PostBigBlind,
-            dec!(0.20),
-            dec!(0.20),
-            false,
-        ),
-        make_action(
-            2,
-            Street::Preflop,
-            "Hero",
-            ActionType::Fold,
-            dec!(0),
-            dec!(0.10),
-            false,
-        ),
-    ];
-    let mut h2 = valid_hand(make_canonical_hand(1, p.clone(), a2, vec![], vec![]));
-    h2.header.site_hand_id = "H2".to_string();
+    let mut h1b = hero_sb_folds("H1B", dec!(0.05), dec!(0.10));
+    h1b.header.currency = CurrencyCode::CAD;
+    let mut h2 = hero_sb_folds("H2", dec!(0.10), dec!(0.25));
     h2.header.currency = CurrencyCode::CAD;
-    h2.header.small_blind = dec!(0.10);
-    h2.header.big_blind = dec!(0.20);
-
-    // Hand 3: USD 0.05/0.10
-    let mut h3 = valid_hand(make_canonical_hand(1, p, a, vec![], vec![]));
-    h3.header.site_hand_id = "H3".to_string();
+    let mut h3 = hero_sb_folds("H3", dec!(0.05), dec!(0.10));
     h3.header.currency = CurrencyCode::USD;
-    h3.header.small_blind = dec!(0.05);
-    h3.header.big_blind = dec!(0.10);
 
     let temp_db = NamedTempFile::new().unwrap();
     let mut repo = SqliteRepository::open(temp_db.path()).unwrap();
-    repo.insert_hands_batch(&[h1, h2, h3]).unwrap();
+    let stored = repo.insert_hands_batch(&[h1, h1b, h2, h3]).unwrap();
+    assert!(stored.rejected.is_empty(), "{:?}", stored.rejected);
+
+    let header =
+        "currency,stakes,hands,net,net_per_100,bb_won,bb_per_100,rake,fees,blinds,straddles";
+    // 2 hands; net -0.10; $/100 -0.10 / 2 × 100; bb_won -0.10 / 0.10; bb/100 -1.00 / 2 × 100
+    let cad_small = "CAD,0.05/0.1,2,-0.1,-5.00,-1.00,-50.00,0,0,0.1,0";
+    // net -0.10; $/100 -10.00; bb_won -0.10 / 0.25 = -0.40; bb/100 -40.00; blinds 0.1
+    let cad_big = "CAD,0.1/0.25,1,-0.1,-10.00,-0.40,-40.00,0,0,0.1,0";
+    // 3 hands; net -0.20; $/100 -0.20 / 3 × 100 = -6.67; bb_won -1.00 + -0.40 = -1.40;
+    // bb/100 -1.40 / 3 × 100 = -46.67 (the mean of the rows would be -45.00; Σ net / Σ bb gives
+    // bb_won -0.44)
+    let cad_all = "CAD,ALL,3,-0.2,-6.67,-1.40,-46.67,0,0,0.2,0";
+    // net -0.05; $/100 -0.05 × 100; bb_won -0.05 / 0.10; bb/100 -0.5 × 100; blinds the SB
+    let usd_small = "USD,0.05/0.1,1,-0.05,-5.00,-0.50,-50.00,0,0,0.05,0";
 
     // 1. All stakes: CAD has two stakes then ALL; USD has one stake and no ALL
     let mut buf = Vec::new();
@@ -264,78 +270,57 @@ fn stakes_synthetic_and_parsing() {
     )
     .unwrap();
     assert!(outcome.unmatched_stakes.is_empty());
-    let out = String::from_utf8(buf).unwrap();
-    let lines: Vec<&str> = out.lines().collect();
     assert_eq!(
-        lines[0],
-        "currency,stakes,hands,net,net_per_100,bb_won,bb_per_100,rake,fees,blinds,straddles"
+        String::from_utf8(buf).unwrap(),
+        format!("{header}\n{cad_small}\n{cad_big}\n{cad_all}\n{usd_small}\n")
     );
-    assert!(lines[1].starts_with("CAD,0.05/0.1,"));
-    assert!(lines[2].starts_with("CAD,0.1/0.2,"));
-    assert!(lines[3].starts_with("CAD,ALL,2,"));
-    assert!(lines[4].starts_with("USD,0.05/0.1,1,"));
-    assert_eq!(lines.len(), 5);
 
-    // 2. Filter to 0.05/0.1: drops CAD's 0.1/0.2 and drops ALL
-    let mut buf = Vec::new();
-    let opt = ReportOptions {
-        stakes: Some(vec![Stakes::from_str("0.05/0.1").unwrap()]),
-    };
-    write_report(&repo, ReportKind::Results, &opt, &mut buf).unwrap();
-    let out = String::from_utf8(buf).unwrap();
-    let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.len(), 3);
-    assert!(lines[1].starts_with("CAD,0.05/0.1,1,"));
-    assert!(lines[2].starts_with("USD,0.05/0.1,1,"));
+    // 2. Filter to 0.05/0.1: drops CAD's 0.1/0.25 row and its ALL row
+    assert_eq!(
+        report_text(&repo, ReportKind::Results, &stakes_options(&["0.05/0.1"])),
+        format!("{header}\n{cad_small}\n{usd_small}\n")
+    );
 
-    // 3. Filter with both CAD stakes restores ALL row, even with 0.10 spelling
-    let mut buf = Vec::new();
-    let opt = ReportOptions {
-        stakes: Some(vec![
-            Stakes::from_str("0.10/0.20").unwrap(),
-            Stakes::from_str("0.05/0.10").unwrap(),
-        ]),
-    };
-    write_report(&repo, ReportKind::Results, &opt, &mut buf).unwrap();
-    let out = String::from_utf8(buf).unwrap();
-    let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.len(), 5);
-    assert!(lines[3].starts_with("CAD,ALL,2,"));
+    // 3. Both CAD stakes, in the other order and with 0.10-style spellings, restore ALL
+    assert_eq!(
+        report_text(
+            &repo,
+            ReportKind::Results,
+            &stakes_options(&["0.10/0.250", "0.05/0.10"])
+        ),
+        format!("{header}\n{cad_small}\n{cad_big}\n{cad_all}\n{usd_small}\n")
+    );
 
     // 4. Unmatched stake reported in outcome
     let mut buf = Vec::new();
-    let opt = ReportOptions {
-        stakes: Some(vec![
-            Stakes::from_str("0.05/0.1").unwrap(),
-            Stakes::from_str("1.0/2.0").unwrap(),
-        ]),
-    };
-    let outcome = write_report(&repo, ReportKind::Results, &opt, &mut buf).unwrap();
+    let outcome = write_report(
+        &repo,
+        ReportKind::Results,
+        &stakes_options(&["0.05/0.1", "1.0/2.0"]),
+        &mut buf,
+    )
+    .unwrap();
     assert_eq!(outcome.unmatched_stakes.len(), 1);
     assert_eq!(outcome.unmatched_stakes[0].to_string(), "1/2");
 
-    // 5. Restricts positions, sessions, and stats
-    let opt_single = ReportOptions {
-        stakes: Some(vec![Stakes::from_str("0.1/0.2").unwrap()]),
-    };
-    let mut buf = Vec::new();
-    write_report(&repo, ReportKind::Positions, &opt_single, &mut buf).unwrap();
-    let pos_out = String::from_utf8(buf).unwrap();
-    // Only CAD has 0.1/0.2, USD has none
-    assert!(pos_out.contains("CAD,"));
-    assert!(!pos_out.contains("USD,"));
-
-    let mut buf = Vec::new();
-    write_report(&repo, ReportKind::Sessions, &opt_single, &mut buf).unwrap();
-    let sess_out = String::from_utf8(buf).unwrap();
-    assert!(sess_out.contains("CAD,"));
-    assert!(!sess_out.contains("USD,"));
-
-    let mut buf = Vec::new();
-    write_report(&repo, ReportKind::Stats, &opt_single, &mut buf).unwrap();
-    let stats_out = String::from_utf8(buf).unwrap();
-    assert!(stats_out.contains("CAD,"));
-    assert!(!stats_out.contains("USD,"));
+    // 5. Restricts positions, sessions, and stats: only H2 (CAD 0.1/0.25) remains
+    let only_big = stakes_options(&["0.1/0.25"]);
+    // Hero is the heads-up SB: net -0.1; bb/100 -0.40 × 100; VPIP 0/1; PFR 0/1; RFI 0/1
+    assert_eq!(
+        report_text(&repo, ReportKind::Positions, &only_big),
+        "currency,position,hands,net,bb_per_100,vpip,pfr,rfi\n\
+         CAD,SB,1,-0.1,-40.00,0.00,0.00,0.00\n"
+    );
+    assert_eq!(
+        report_text(&repo, ReportKind::Sessions, &only_big),
+        "currency,platform,table,start,end,duration_seconds,hands,net,bb_per_100\n\
+         CAD,GGPoker,TestTable,2026-08-21T17:00:00,2026-08-21T17:00:00,0,1,-0.1,-40.00\n"
+    );
+    let stats_out = report_text(&repo, ReportKind::Stats, &only_big);
+    let stats_lines: Vec<&str> = stats_out.lines().collect();
+    assert_eq!(stats_lines.len(), 40, "header and 39 stats, CAD only");
+    assert_eq!(stats_lines[1], "CAD,vpip,0,1,0.00");
+    assert!(stats_lines[1..].iter().all(|l| l.starts_with("CAD,")));
 }
 
 #[test]
@@ -401,170 +386,108 @@ fn positions_null_gives_question_mark_row() {
     assert!(lines[1].starts_with("CAD,?,1,"));
 }
 
+/// `hero_sb_folds` at 0.05/0.10 on `table` at `ts` (`%Y-%m-%d %H:%M:%S`), with an optional UTC
+/// offset. Hero's net is -0.05 and `bb_won` -0.5 in every such hand.
+fn session_hand(id: &str, table: &str, ts: &str, offset: Option<i32>) -> CanonicalHand {
+    let mut h = hero_sb_folds(id, dec!(0.05), dec!(0.10));
+    h.header.table_name = table.to_string();
+    h.header.timestamp = NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S").unwrap();
+    h.header.utc_offset_seconds = offset;
+    h
+}
+
 #[test]
 fn sessions_duration_gaps_and_dst() {
-    let p = vec![
-        make_player(1, "Hero", dec!(10), true),
-        make_player(2, "Villain", dec!(10), false),
+    let hands = vec![
+        // A one-hand session, and another table's one-hand session at the same start
+        session_hand("H1", "TableSingle", "2026-08-21 12:00:00", None),
+        session_hand("H0", "TableA", "2026-08-21 12:00:00", None),
+        // Two hands 30:00 apart: one session
+        session_hand("H2A", "Table30Min", "2026-08-21 13:00:00", None),
+        session_hand("H2B", "Table30Min", "2026-08-21 13:30:00", None),
+        // Two hands 30:01 apart: two sessions
+        session_hand("H3A", "Table3001", "2026-08-21 14:00:00", None),
+        session_hand("H3B", "Table3001", "2026-08-21 14:30:01", None),
+        // Daylight-saving change, both offsets stated: 01:50 at -4 h (05:50 UTC), then 01:10 at
+        // -5 h (06:10 UTC)
+        session_hand("H4A", "TableDST", "2026-11-01 01:50:00", Some(-14_400)),
+        session_hand("H4B", "TableDST", "2026-11-01 01:10:00", Some(-18_000)),
+        // Not every hand states an offset: as printed, 10:00 then 10:05
+        session_hand("H5A", "TableMixed", "2026-11-02 10:00:00", Some(-14_400)),
+        session_hand("H5B", "TableMixed", "2026-11-02 10:05:00", None),
     ];
-    let a = vec![
-        make_action(
-            0,
-            Street::Preflop,
-            "Hero",
-            ActionType::PostSmallBlind,
-            dec!(0.05),
-            dec!(0.05),
-            false,
-        ),
-        make_action(
-            1,
-            Street::Preflop,
-            "Villain",
-            ActionType::PostBigBlind,
-            dec!(0.10),
-            dec!(0.10),
-            false,
-        ),
-        make_action(
-            2,
-            Street::Preflop,
-            "Hero",
-            ActionType::Fold,
-            dec!(0),
-            dec!(0.05),
-            false,
-        ),
-    ];
-
-    // Case 1: single hand session has duration_seconds = 0
-    let mut h1 = valid_hand(make_canonical_hand(1, p.clone(), a.clone(), vec![], vec![]));
-    h1.header.site_hand_id = "H1".to_string();
-    h1.header.table_name = "TableSingle".to_string();
-    h1.header.timestamp =
-        NaiveDateTime::parse_from_str("2026-08-21 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
-
-    // Case 2: two hands 30:00 apart are one session (duration 1800)
-    let mut h2a = valid_hand(make_canonical_hand(1, p.clone(), a.clone(), vec![], vec![]));
-    h2a.header.site_hand_id = "H2A".to_string();
-    h2a.header.table_name = "Table30Min".to_string();
-    h2a.header.timestamp =
-        NaiveDateTime::parse_from_str("2026-08-21 13:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
-
-    let mut h2b = valid_hand(make_canonical_hand(1, p.clone(), a.clone(), vec![], vec![]));
-    h2b.header.site_hand_id = "H2B".to_string();
-    h2b.header.table_name = "Table30Min".to_string();
-    h2b.header.timestamp =
-        NaiveDateTime::parse_from_str("2026-08-21 13:30:00", "%Y-%m-%d %H:%M:%S").unwrap();
-
-    // Case 3: two hands 30:01 apart are two sessions
-    let mut h3a = valid_hand(make_canonical_hand(1, p.clone(), a.clone(), vec![], vec![]));
-    h3a.header.site_hand_id = "H3A".to_string();
-    h3a.header.table_name = "Table3001".to_string();
-    h3a.header.timestamp =
-        NaiveDateTime::parse_from_str("2026-08-21 14:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
-
-    let mut h3b = valid_hand(make_canonical_hand(1, p.clone(), a.clone(), vec![], vec![]));
-    h3b.header.site_hand_id = "H3B".to_string();
-    h3b.header.table_name = "Table3001".to_string();
-    h3b.header.timestamp =
-        NaiveDateTime::parse_from_str("2026-08-21 14:30:01", "%Y-%m-%d %H:%M:%S").unwrap();
-
-    // Case 4: daylight-saving change: 01:50 at -4h (-14400s), 01:10 at -5h (-18000s) = 20 min (1200s) later in UTC
-    let mut h4a = valid_hand(make_canonical_hand(1, p.clone(), a.clone(), vec![], vec![]));
-    h4a.header.site_hand_id = "H4A".to_string();
-    h4a.header.table_name = "TableDST".to_string();
-    h4a.header.timestamp =
-        NaiveDateTime::parse_from_str("2026-11-01 01:50:00", "%Y-%m-%d %H:%M:%S").unwrap();
-    h4a.header.utc_offset_seconds = Some(-14400);
-
-    let mut h4b = valid_hand(make_canonical_hand(1, p, a, vec![], vec![]));
-    h4b.header.site_hand_id = "H4B".to_string();
-    h4b.header.table_name = "TableDST".to_string();
-    h4b.header.timestamp =
-        NaiveDateTime::parse_from_str("2026-11-01 01:10:00", "%Y-%m-%d %H:%M:%S").unwrap();
-    h4b.header.utc_offset_seconds = Some(-18000);
-
     let temp_db = NamedTempFile::new().unwrap();
     let mut repo = SqliteRepository::open(temp_db.path()).unwrap();
-    repo.insert_hands_batch(&[h1, h2a, h2b, h3a, h3b, h4a, h4b])
-        .unwrap();
+    let stored = repo.insert_hands_batch(&hands).unwrap();
+    assert!(stored.rejected.is_empty(), "{:?}", stored.rejected);
 
-    let mut buf = Vec::new();
-    write_report(
-        &repo,
-        ReportKind::Sessions,
-        &ReportOptions::default(),
-        &mut buf,
-    )
-    .unwrap();
-    let out = String::from_utf8(buf).unwrap();
-
-    // TableSingle: duration 0, 1 hand
-    assert!(out.contains(",TableSingle,2026-08-21T12:00:00,2026-08-21T12:00:00,0,1,"));
-
-    // Table30Min: duration 1800, 2 hands
-    assert!(out.contains(",Table30Min,2026-08-21T13:00:00,2026-08-21T13:30:00,1800,2,"));
-
-    // Table3001: 2 separate sessions
-    assert!(out.contains(",Table3001,2026-08-21T14:00:00,2026-08-21T14:00:00,0,1,"));
-    assert!(out.contains(",Table3001,2026-08-21T14:30:01,2026-08-21T14:30:01,0,1,"));
-
-    // TableDST: 1 session, duration 1200
-    assert!(out.contains(",TableDST,2026-11-01T01:50:00,2026-11-01T01:10:00,1200,2,"));
+    // Listed by currency, start time, table, then platform. Net is -0.05 per hand and bb/100
+    // is -0.5 × 100 in every session.
+    let expected = "\
+currency,platform,table,start,end,duration_seconds,hands,net,bb_per_100
+CAD,GGPoker,TableA,2026-08-21T12:00:00,2026-08-21T12:00:00,0,1,-0.05,-50.00
+CAD,GGPoker,TableSingle,2026-08-21T12:00:00,2026-08-21T12:00:00,0,1,-0.05,-50.00
+CAD,GGPoker,Table30Min,2026-08-21T13:00:00,2026-08-21T13:30:00,1800,2,-0.1,-50.00
+CAD,GGPoker,Table3001,2026-08-21T14:00:00,2026-08-21T14:00:00,0,1,-0.05,-50.00
+CAD,GGPoker,Table3001,2026-08-21T14:30:01,2026-08-21T14:30:01,0,1,-0.05,-50.00
+CAD,GGPoker,TableDST,2026-11-01T01:50:00,2026-11-01T01:10:00,1200,2,-0.1,-50.00
+CAD,GGPoker,TableMixed,2026-11-02T10:00:00,2026-11-02T10:05:00,300,2,-0.1,-50.00
+";
+    assert_eq!(
+        report_text(&repo, ReportKind::Sessions, &ReportOptions::default()),
+        expected
+    );
 }
 
 #[test]
 fn version_guard_rejects_stale_cache_and_writes_nothing() {
-    let p = vec![
-        make_player(1, "Hero", dec!(10), true),
-        make_player(2, "Villain", dec!(10), false),
-    ];
-    let a = vec![
-        make_action(
-            0,
-            Street::Preflop,
-            "Hero",
-            ActionType::PostSmallBlind,
-            dec!(0.05),
-            dec!(0.05),
-            false,
-        ),
-        make_action(
-            1,
-            Street::Preflop,
-            "Villain",
-            ActionType::PostBigBlind,
-            dec!(0.10),
-            dec!(0.10),
-            false,
-        ),
-        make_action(
-            2,
-            Street::Preflop,
-            "Hero",
-            ActionType::Fold,
-            dec!(0),
-            dec!(0.05),
-            false,
-        ),
-    ];
-    let mut h = valid_hand(make_canonical_hand(1, p, a, vec![], vec![]));
-    h.header.site_hand_id = "H_VG".to_string();
-
     let temp_db = NamedTempFile::new().unwrap();
     let mut repo = SqliteRepository::open(temp_db.path()).unwrap();
-    let res = repo.insert_hands_batch(&[h]).unwrap();
-    eprintln!("positions rejected: {:?}", res.rejected);
-
-    // Mark cache stale via direct SQL
-    repo.connection()
-        .execute(
-            "UPDATE derived_cache SET version = 999 WHERE name = 'hand_player_stats'",
-            [],
-        )
+    let stored = repo
+        .insert_hands_batch(&[hero_sb_folds("H_VG", dec!(0.05), dec!(0.10))])
         .unwrap();
+    assert!(stored.rejected.is_empty(), "{:?}", stored.rejected);
+    let expected = poker_tracker::stats::STATS_VERSION;
 
+    // 1. Another connection marks the cache as built by another version
+    {
+        let conn_b = rusqlite::Connection::open(temp_db.path()).unwrap();
+        conn_b
+            .execute(
+                "UPDATE derived_cache SET version = ?1 WHERE name = 'hand_player_stats'",
+                [expected + 1],
+            )
+            .unwrap();
+    }
+    for kind in [
+        ReportKind::Results,
+        ReportKind::Positions,
+        ReportKind::Sessions,
+        ReportKind::Stats,
+    ] {
+        let mut buf = Vec::new();
+        let err = write_report(&repo, kind, &ReportOptions::default(), &mut buf).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                ReportError::Storage(StorageError::StaleDerivedCache { found: Some(v), expected: e })
+                    if *v == expected + 1 && *e == expected
+            ),
+            "{kind:?}: expected StaleDerivedCache, got {err:?}"
+        );
+        assert!(buf.is_empty(), "{kind:?}: a stale cache must write nothing");
+    }
+
+    // 2. With the derived_cache row deleted instead, found is None
+    {
+        let conn_b = rusqlite::Connection::open(temp_db.path()).unwrap();
+        conn_b
+            .execute(
+                "DELETE FROM derived_cache WHERE name = 'hand_player_stats'",
+                [],
+            )
+            .unwrap();
+    }
     let mut buf = Vec::new();
     let err = write_report(
         &repo,
@@ -573,14 +496,54 @@ fn version_guard_rejects_stale_cache_and_writes_nothing() {
         &mut buf,
     )
     .unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            ReportError::Storage(StorageError::StaleDerivedCache { found: None, expected: e })
+                if *e == expected
+        ),
+        "expected StaleDerivedCache with found None, got {err:?}"
+    );
+    assert!(buf.is_empty(), "a missing cache row must write nothing");
+}
 
-    match err {
-        ReportError::Storage(StorageError::StaleDerivedCache { found, expected }) => {
-            assert_eq!(found, Some(999));
-            assert_eq!(expected, poker_tracker::stats::STATS_VERSION);
-        }
-        other => panic!("expected StaleDerivedCache, got: {other}"),
+#[test]
+fn sessions_fail_closed_on_an_unreadable_timestamp() {
+    let temp_db = NamedTempFile::new().unwrap();
+    let mut repo = SqliteRepository::open(temp_db.path()).unwrap();
+    let stored = repo
+        .insert_hands_batch(&[
+            session_hand("T1", "Table", "2026-08-21 12:00:00", None),
+            session_hand("T2", "Table", "2026-08-21 12:01:00", None),
+        ])
+        .unwrap();
+    assert!(stored.rejected.is_empty(), "{:?}", stored.rejected);
+
+    {
+        let conn_b = rusqlite::Connection::open(temp_db.path()).unwrap();
+        conn_b
+            .execute(
+                "UPDATE hands SET timestamp = '21/08/2026 17:30:00' WHERE site_hand_id = 'T2'",
+                [],
+            )
+            .unwrap();
     }
 
-    assert!(buf.is_empty(), "stale cache must write nothing to output");
+    let mut buf = Vec::new();
+    let err = write_report(
+        &repo,
+        ReportKind::Sessions,
+        &ReportOptions::default(),
+        &mut buf,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            ReportError::Storage(StorageError::CorruptRow { table: "hands", detail })
+                if detail.contains("21/08/2026 17:30:00")
+        ),
+        "expected CorruptRow naming the timestamp, got {err:?}"
+    );
+    assert!(buf.is_empty(), "a corrupt row must write nothing");
 }
