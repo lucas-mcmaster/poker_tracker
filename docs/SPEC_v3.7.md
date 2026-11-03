@@ -410,7 +410,7 @@ No player-hand in the corpus has a `NULL` position.
    | --- | --- | --- |
    | `results` | `currency,stakes,hands,net,net_per_100,bb_won,bb_per_100,rake,fees,blinds,straddles` | Grouped by currency (alphabetical). Within a currency: one row per stakes among the selected hands (`<sb>/<bb>`, each amount printed exactly as in `stats.md` §1.2, e.g. `0.05/0.1`), ordered by big blind then small blind; then, as the **last row of that currency's block**, one row with `stakes = ALL` combining all of that currency's selected stakes, present only when the block has more than one stakes row |
    | `positions` | `currency,position,hands,net,bb_per_100,vpip,pfr,rfi` | One per currency and position label, in the order `EP, MP, CO, BTN, SB, BB`, then `?` for `NULL` positions if any |
-   | `sessions` | `currency,platform,table,start,end,duration_seconds,hands,net,bb_per_100` | One per session (`stats.md` §6.1), by currency, start time, table, then platform. `platform` is `Platform::as_str()` (the session key includes it, so two sites' tables of the same name stay apart). `start`/`end` are the first and last hands' timestamps as stored (`2026-08-21T16:54:10`). `duration_seconds` is an integer (`stats.md` §6.1) |
+   | `sessions` | `currency,platform,table,start,end,duration_seconds,hands,net,bb_per_100` | One per session (`stats.md` §6.1), by currency, `start` as printed, table, then platform. `platform` is `Platform::as_str()` (the session key includes it, so two sites' tables of the same name stay apart). `start`/`end` are the first and last hands' timestamps as stored (`2026-08-21T16:54:10`). `duration_seconds` is an integer (`stats.md` §6.1) |
    | `stats` | `currency,stat,numerator,denominator,value` | One per stat of `stats.md` §5, in that table's order (`af_*` and `afq_*` last). For `vpip` the denominator printed is `Σ hands − Σ p_walk` |
 
 5. **M15.5 Tests.** Golden CSVs for the v3.6 folder imported alone (below), the v3.5 results row,
@@ -429,9 +429,11 @@ No player-hand in the corpus has a `NULL` position.
    - **sessions:** a one-hand session has `duration_seconds = 0`; two hands 30:00 apart are one
      session and 30:01 apart are two; hands that state UTC offsets across a daylight-saving
      change (e.g. `01:50` at `-4 h`, then `01:10` at `-5 h`, 20 minutes later in UTC) are one
-     session with `duration_seconds = 1200`; two platforms' tables of the same name are
-     separate sessions (if only one `Platform` variant exists, test the grouping function
-     directly with distinct platform keys rather than adding a variant);
+     session with `duration_seconds = 1200`; a table whose hands do not all state an offset is
+     ordered and measured as printed (`10:00` at `-4 h`, then `10:05` with no offset, is one
+     session from `10:00` to `10:05` with `duration_seconds = 300`); two platforms' tables of
+     the same name are separate sessions (if only one `Platform` variant exists, test the
+     grouping function directly with distinct platform keys rather than adding a variant);
    - **version guard:** a report on a connection whose cache another connection marked stale
      returns `StaleDerivedCache` and writes nothing to `out`.
 
@@ -519,8 +521,9 @@ v3.5 file imported alone, `results` row:
 
 **Docs:** in `docs/known_limitations.md`, add that session durations understate the time at the
 table by about one hand (hand histories record start times only) and that elapsed times are
-measured on the timestamps as printed when a site states no UTC offset (GGPoker), so a session
-that crosses a daylight-saving change is off by an hour there.
+measured on the timestamps as printed when a table's hands do not all state a UTC offset
+(GGPoker states none), so a session that crosses a daylight-saving change is off by an hour
+there.
 
 **Done when:**
 
@@ -695,7 +698,7 @@ the ten sessions, in the order of §6, are `7.75, -17.550556, 2.584565, 0.91822,
 | 8 | Multiway all-ins with side pots | Excluded from equity adjustment (PT4's rule) | Claude's call |
 | 9 | EV Cashout in equity results | The cashing player keeps their actual net; opponents are adjusted | Claude's call |
 | 10 | Rake attribution | Contributed method (by `invested`), largest-remainder rounding to micro-units | Claude's call |
-| 11 | Sessions | Same platform, currency and table, gaps of at most 30 minutes (measured in UTC when both hands state an offset); computed at report time; the report shows `platform` and `duration_seconds` (first to last hand start) | Claude's call (gap); Owner (duration, site-neutral) |
+| 11 | Sessions | Same platform, currency and table, gaps of at most 30 minutes (one time basis per table: UTC when every hand of the table states an offset, otherwise as printed); computed at report time; the report shows `platform` and `duration_seconds` (first to last hand start) | Claude's call (gap); Owner (duration, site-neutral) |
 | 12 | VPIP / PFR denominators | PokerTracker 4's: VPIP `p_vpip / (hands − p_walk)` (PT4 `cnt_vpip / (cnt_hands − cnt_walks)`), PFR `p_pfr / p_pfr_opp` (PT4 `cnt_pfr / cnt_pfr_opp`: hands where a preflop raise was possible) | Owner |
 | 13 | Opportunity precision | First qualifying decision per player-hand; no reopening check after short all-ins | Claude's call |
 | 14 | Debug test speed | If exact equity makes `cargo test` exceed 60 s, `[profile.dev] opt-level = 1` may be added to `Cargo.toml` (no `Cargo.lock` change) | Claude's call |
@@ -720,3 +723,13 @@ with `tools/oracles/v3_7_oracle.py`.
 | Lock wait during another process's rebuild is a documented limitation; the concurrency test uses a small database | §2 step 2; M13.6; M13 docs; decision 17 |
 | `sessions` report: `platform` and `duration_seconds` columns; elapsed time in UTC when offsets are stated | `stats.md` §6.1; M15.4; the `sessions` CSVs of §6 and §7.5; decision 11 |
 | `results` `ALL` row placement fixed; `--stakes` selection for every report | M15.2–M15.5; §7.5; §8 (M17); decision 18 |
+
+## 12. Amendments after M15 (Nov 3, 2026)
+
+Made after the M15 review, by the owner's decision. `STATS_VERSION` stays 3: sessions are
+computed at report time and nothing in the cache changes. No pinned number changes (GGPoker
+states no UTC offset), and `tools/oracles/v3_7_oracle.py` applies the same rule.
+
+| Change | Why | Where |
+| --- | --- | --- |
+| Sessions use one time basis per table: UTC when every selected hand of the table states an offset, otherwise the timestamps as printed. Hands are ordered, gaps measured and durations taken on that basis; sessions are listed by their printed `start`, so the rows follow the column the reader sees | The old rule ordered by printed timestamp but measured in UTC pair by pair. That contradicted its own daylight-saving test (ordering by printed time puts `01:10` before `01:50`), and a table mixing hands with and without an offset gave a negative duration (`10:00` at `-4 h` then `10:05` with none: `-300`) | `stats.md` §6.1; M15.4 `sessions` row; M15.5 sessions tests; M15 Docs; decision 11 |

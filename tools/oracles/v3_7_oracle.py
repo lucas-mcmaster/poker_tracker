@@ -20,7 +20,7 @@ import math
 import os
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 STREETS = ("p", "f", "t", "r")
 POSTS = {"PostSmallBlind", "PostBigBlind", "PostDeadBlind", "PostStraddle"}
@@ -371,34 +371,39 @@ def results(h):
                             straddles=straddles[p["name"]]) for i, p in enumerate(ps)}
 
 
-def elapsed_seconds(a, b):
-    """Seconds from hand a's start to hand b's start: in UTC when both state an offset, else on
-    the timestamps as printed (docs/stats.md §6.1)."""
-    d = (b["ts"] - a["ts"]).total_seconds()
-    if a["offset"] is not None and b["offset"] is not None:
-        d -= b["offset"] - a["offset"]
-    return int(d)
+def table_times(hs):
+    """Each hand's time on its table's basis (docs/stats.md §6.1): UTC (timestamp minus offset)
+    when every hand of the table states an offset, otherwise the timestamp as printed."""
+    utc = all(h["offset"] is not None for h in hs)
+    return [h["ts"] - timedelta(seconds=h["offset"]) if utc else h["ts"] for h in hs]
 
 
 def sessions(hands):
-    """Hero table sessions: same (platform, currency, table), consecutive hands (ordered by
-    timestamp, then site hand id) at most 30 min apart."""
+    """Hero table sessions: same (platform, currency, table); the table's hands ordered by their
+    time on its basis, then site hand id; consecutive hands at most 30 min apart, in whole
+    seconds. Returns (hands, times) pairs, listed by currency, printed start, table, then
+    platform."""
     out = []
     by_table = collections.defaultdict(list)
     for h in hands:
         if any(p["hero"] for p in h["players"]):
             by_table[(h["platform"], h["currency"], h["table"])].append(h)
-    for key, hs in by_table.items():
-        hs.sort(key=lambda h: (h["ts"], h["site_hand_id"]))
-        cur = [hs[0]]
-        for h in hs[1:]:
-            if elapsed_seconds(cur[-1], h) > SESSION_GAP_SECONDS:
-                out.append(cur); cur = [h]
+    for hs in by_table.values():
+        pairs = sorted(zip(table_times(hs), hs), key=lambda th: (th[0], th[1]["site_hand_id"]))
+        cur = [pairs[0]]
+        for th in pairs[1:]:
+            if int((th[0] - cur[-1][0]).total_seconds()) > SESSION_GAP_SECONDS:
+                out.append(cur); cur = [th]
             else:
-                cur.append(h)
+                cur.append(th)
         out.append(cur)
-    out.sort(key=lambda s: (s[0]["currency"], s[0]["ts"], s[0]["table"], s[0]["platform"]))
-    return out
+    out.sort(key=lambda s: (s[0][1]["currency"], s[0][1]["ts"], s[0][1]["table"], s[0][1]["platform"]))
+    return [([h for _, h in s], [t for t, _ in s]) for s in out]
+
+
+def duration_seconds(times):
+    """First to last hand start of a session, on its table's basis (docs/stats.md §6.1)."""
+    return int((times[-1] - times[0]).total_seconds())
 
 
 # ----------------------------------------------------------------------------------------------
@@ -652,11 +657,11 @@ def main():
                   f"{pct(a['p_rfi'], a['p_rfi_opp'])}")
     print("\n## SPEC §6 (M15): sessions")
     sess = sessions(v36)
-    for s in sess:
+    for s, t in sess:
         net = sum(hero(h)["net"] for h in s)
         bbw = sum(hero(h)["net"] * 1_000_000 // h["bb"] for h in s)
         print(f"  CAD,{s[0]['platform']},{s[0]['table']},{s[0]['ts'].isoformat()},{s[-1]['ts'].isoformat()},"
-              f"{elapsed_seconds(s[0], s[-1])},{len(s)},"
+              f"{duration_seconds(t)},{len(s)},"
               f"{money(net)},{fixed2(bbw * 100, len(s) * 1_000_000)}")
     print(f"  ({len(sessions(hands))} sessions over the whole database)")
     print("\n## SPEC §6 (M15): stats")
@@ -725,7 +730,7 @@ def main():
               f" ev_net={money(sum(ev_net(h, all_in_ev(h))[hero(h)['name']] for h in hs))}")
     print("  " + results_row(v36, True))
     print("  sessions ev_net: " + ", ".join(
-        money(sum(ev_net(h, all_in_ev(h))[hero(h)["name"]] for h in s)) for s in sess))
+        money(sum(ev_net(h, all_in_ev(h))[hero(h)["name"]] for h in s)) for s, _ in sess))
 
 
 if __name__ == "__main__":

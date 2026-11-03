@@ -254,15 +254,18 @@ lower seat number. The parts always sum to exactly `T`. Use `i128` for the produ
 `T` is `0`, every part is `0`.
 
 **Sessions.** A table session is a maximal run of the hero's hands at the same `(platform,
-currency, table_name)`, ordered by timestamp then site hand id, where consecutive hands start at
-most **30 minutes** apart (`SESSION_GAP`, inclusive). Sessions are computed at report time, not
-cached, from the hands the report selects.
+currency, table_name)` (a *table*) in which consecutive hands start at most **30 minutes** apart
+(`SESSION_GAP`, inclusive). Sessions are computed at report time, not cached, from the hands the
+report selects.
 
-- **Elapsed time** between two hands is the difference of their start timestamps, in whole
-  seconds. When both hands state a UTC offset (`utc_offset_seconds`), it is taken in UTC (each
-  timestamp minus its offset), so a session across a daylight-saving change is measured
-  correctly. Otherwise the timestamps are compared as printed (GGPoker states no offset). The
-  gap rule and the duration both use it.
+- **Time basis.** All of a table's selected hands use one basis. It is **UTC** when every one of
+  them states a UTC offset (`utc_offset_seconds`; a hand's UTC time is its timestamp minus its
+  offset), so a session across a daylight-saving change is measured correctly. Otherwise it is
+  the timestamps **as printed** (GGPoker states no offset). With one basis per table, no gap or
+  duration is negative.
+- **Order and elapsed time.** A table's hands are ordered by their time on the table's basis,
+  then by site hand id. The elapsed time between two hands is the difference of their times on
+  that basis, in whole seconds. The gap rule and the duration both use it.
 - **Duration** (`duration_seconds`) is the elapsed time from the session's first hand to its
   last hand. Hand histories record when a hand starts, not when it ends, so the duration
   understates the time at the table by about one hand (30–40 s at GGPoker 6-max); a one-hand
