@@ -144,29 +144,49 @@ Site-specific text format rules observed in real exports:
 
 ## 3. Derived data (`src/stats/`, `hand_player_stats`)
 
-Rules governing derived statistics and the derived cache introduced in v3.7 (M13):
+Rules for the derived statistics cache (v3.7, M13). Definitions of every counter and position
+are in `docs/stats.md`; the lifecycle contract is `docs/SPEC_v3.7.md` §2.
 
-### Cache lifecycle and isolation
+### Cache lifecycle
 
-- **Pure cache:** `hand_player_stats` is strictly a derived read/reporting cache computed from canonical hands. Ingestion, validation, and duplicate detection never read `hand_player_stats`.
-- **Versioning:** Cache versioning is tracked by the single-row `derived_cache (id, version, updated_at)` table (`id = 1`) and the code constant `STATS_VERSION` (`src/stats/mod.rs`). Bumping any definition in `docs/stats.md` requires incrementing `STATS_VERSION` in the same commit.
-- **Automatic rebuild on open:** Opening a database (`SqliteRepository::open`) inspects `derived_cache` under `BEGIN IMMEDIATE`. If the table is empty or its `version != STATS_VERSION`, the cache is completely rebuilt (`rebuild_derived_in_tx`) before the connection is returned, and reported via `rebuilt_on_open()`.
-- **Savepoint population:** Newly imported hands have their derived stats computed and written within their per-hand savepoint.
-- **Version guard:** `SqliteRepository::insert_sourced_hands_batch` inspects `derived_cache.version` before opening any savepoint. If `version != STATS_VERSION` or the row is missing, insertion fails immediately with `StorageError::StaleDerivedCache` without altering the database. In the pipeline, this is treated as a batch-level error and quarantines nothing.
-- **Unloadable hand failure:** If any stored hand cannot be loaded into a `CanonicalHand` during cache rebuild, the rebuild aborts immediately and open fails with `StorageError::DerivedRebuildFailed { platform, site_hand_id }`. No stale or partial cache is committed.
-- **Forced rebuild:** Cache rebuild can be explicitly triggered via `SqliteRepository::rebuild_derived` and the CLI flag `--rebuild-stats`.
-- **Cascading deletion:** Deleting an import run (`delete_import_run`) removes canonical hands, cascading to delete all corresponding rows in `hand_player_stats`.
+- **A cache only.** `hand_player_stats` is computed only from stored canonical hands. Validation,
+  ingestion and duplicate detection never read it, and dropping it loses nothing.
+- **Shape.** One row per `hand_players` row: `(hand_id, player_id)` primary key, a nullable
+  `position` code (0–9), and one `INTEGER NOT NULL CHECK (… >= 0)` column per entry of
+  `stats::COLUMNS`, in that order. The table is created by the rebuild, never by `MIGRATIONS`.
+- **Versioning.** `derived_cache(name, version, built_at)` (migration 3) holds one row,
+  `name = 'hand_player_stats'`, with the `STATS_VERSION` the cache was built with. Changing any
+  definition in `docs/stats.md` bumps `STATS_VERSION` in the same commit.
+- **Insert.** A newly stored hand's rows are written in its own savepoint; a duplicate writes
+  none.
+- **Rebuild on open.** After migrations, if the `derived_cache` row is missing or its version
+  differs from `STATS_VERSION`, the open rebuilds the whole cache in one `BEGIN IMMEDIATE`
+  transaction, re-reading the version under the lock so concurrent opens rebuild once.
+  `rebuilt_on_open()` reports it. `rebuild_derived()` (CLI `--rebuild-stats`) rebuilds
+  unconditionally.
+- **Unloadable hand.** If a stored hand cannot be loaded, the rebuild and the open fail with
+  `StorageError::DerivedRebuildFailed { platform, site_hand_id, source }` (stored text, so it
+  names the hand even when the platform column is the corrupt value) and nothing changes.
+- **Version guard.** `insert_hands_batch` and `insert_sourced_hands_batch` re-read
+  `derived_cache.version` under their write lock before any write. A missing or different
+  version is `StorageError::StaleDerivedCache { found, expected }`: a batch-level error that
+  stores and quarantines nothing. They never rebuild by themselves.
+- **Delete.** Rows go with their hand (`ON DELETE CASCADE` on `hand_id`).
 
-### Player positions (`src/stats/mod.rs`, `docs/stats.md` §2)
+### Positions (`docs/stats.md` §2)
 
-- Table sizes supported: 2 to 10 seated players.
-- **Heads-up (2 players):** The button is the small blind (`SB`, code 9); the other player is the big blind (`BB`, code 8).
-- **Full ring and short-handed (3 to 10 players):**
-  - Button seat is assigned `BTN` (code 7).
-  - First player clockwise from button posting small blind is assigned `SB` (code 9).
-  - First player clockwise from SB posting big blind is assigned `BB` (code 8).
-  - Remaining seats between BB and BTN clockwise are labeled in order:
-    - Early positions: `UTG` (0), `UTG+1` (1), `UTG+2` (2).
-    - Middle positions: `LJ` (3), `HJ` (4), `MP` (5).
-    - Cutoff: `CO` (6).
-- **Non-standard arrangements:** If blinds do not match the expected relative seats, positions cannot be unambiguously mapped and all players in that hand are assigned `None` (`NULL` in `hand_player_stats`). Extra posts (third blind or straddles) do not shift the standard positional labels.
+- PokerTracker numbering, counted **counter-clockwise from the button** among the players dealt
+  in, with the blinds fixed: `SB` = 9, `BB` = 8, then `BTN` = 0, `CO` = 1, and 2, 3, … for the
+  next players counter-clockwise.
+- Labels are derived at report time from the code and `max_seats`: with `max_seats ≤ 6`, code 2
+  is `MP` and codes 3–7 are `EP`; with `max_seats ≥ 7`, codes 2–4 are `MP` and 5–7 are `EP`.
+  Only the code is stored.
+- **Heads-up:** the button posts the small blind and is `SB` (9); the other player is `BB` (8).
+  There is no code 0.
+- The SB is the single `PostSmallBlind` poster and the BB the first `PostBigBlind` poster. A
+  player who posts a missed blind or an extra big blind, or who straddles, keeps their seat's
+  position.
+- **Standard layout check.** Positions are assigned only when the button seat is dealt in,
+  exactly one small blind is posted, and (3+ players) the SB is the first player clockwise after
+  the button and the BB the first player clockwise after the SB, or (heads-up) the button is the
+  SB. Otherwise every player in the hand gets `NULL`.
