@@ -6,7 +6,8 @@ pub mod repository;
 pub mod schema;
 
 pub use repository::{
-    BatchInsertStats, DEFAULT_BUSY_TIMEOUT, DeletedImportRun, HandSource, QuarantinedHand,
-    RejectedHand, SqliteRepository, StorageError, hand_text_sha256, normalized_hand_text,
+    BatchInsertStats, DEFAULT_BUSY_TIMEOUT, DeletedImportRun, DerivedRebuild, HandSource,
+    QuarantinedHand, RejectedHand, SqliteRepository, StorageError, hand_text_sha256,
+    normalized_hand_text,
 };
 pub use schema::{APPLICATION_ID, MIGRATIONS, PRAGMA_TUNING, SCHEMA_VERSION};

@@ -84,6 +84,29 @@ pub enum StorageError {
 
     #[error("stored row in '{table}' cannot be read back: {detail}")]
     CorruptRow { table: &'static str, detail: String },
+
+    #[error(
+        "cannot rebuild the statistics cache: {platform} hand {site_hand_id} cannot be loaded: {source}"
+    )]
+    DerivedRebuildFailed {
+        platform: String,
+        site_hand_id: String,
+        #[source]
+        source: Box<StorageError>,
+    },
+
+    #[error(
+        "the statistics cache was changed by another build (cache version {}, this build expected {expected}); run the command again",
+        format_cache_version(*.found)
+    )]
+    StaleDerivedCache { found: Option<i64>, expected: i64 },
+}
+
+fn format_cache_version(v: Option<i64>) -> String {
+    match v {
+        Some(n) => n.to_string(),
+        None => "none".to_string(),
+    }
 }
 
 impl StorageError {
@@ -159,6 +182,13 @@ pub struct DeletedImportRun {
     pub hands_kept: usize,
     /// Quarantined hands recorded by this run.
     pub quarantined_deleted: usize,
+}
+
+/// Summary of a rebuild of the derived statistics cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DerivedRebuild {
+    pub hands: usize,
+    pub version: i64,
 }
 
 enum InsertOutcome {
@@ -480,7 +510,115 @@ fn insert_one(
         ])?;
     }
 
+    let derived = crate::stats::derive_hand_stats(hand);
+    for st in &derived {
+        let pid = player_id(&st.player_name)?;
+        insert_player_stats(conn, hand_db_id, pid, st)?;
+    }
+
     Ok(InsertOutcome::Inserted)
+}
+
+fn create_hand_player_stats_sql() -> String {
+    let mut sql = String::from(
+        "CREATE TABLE hand_player_stats (\n\
+         hand_id INTEGER NOT NULL REFERENCES hands(id) ON DELETE CASCADE,\n\
+         player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE RESTRICT,\n\
+         position INTEGER CHECK (position IS NULL OR (position BETWEEN 0 AND 9)),\n",
+    );
+    for col in crate::stats::COLUMNS {
+        sql.push_str(&format!("{col} INTEGER NOT NULL CHECK ({col} >= 0),\n"));
+    }
+    sql.push_str(
+        "PRIMARY KEY (hand_id, player_id)\n\
+         ) STRICT, WITHOUT ROWID;\n\
+         CREATE INDEX idx_hand_player_stats_player ON hand_player_stats(player_id, hand_id);",
+    );
+    sql
+}
+
+fn insert_player_stats(
+    conn: &Connection,
+    hand_db_id: i64,
+    player_id: i64,
+    stats: &crate::stats::PlayerHandStats,
+) -> Result<(), StorageError> {
+    static SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        let cols = crate::stats::COLUMNS.join(", ");
+        let placeholders = vec!["?"; 3 + crate::stats::COLUMNS.len()].join(", ");
+        format!(
+            "INSERT INTO hand_player_stats (hand_id, player_id, position, {cols}) VALUES ({placeholders})"
+        )
+    });
+
+    let mut values: Vec<rusqlite::types::Value> =
+        Vec::with_capacity(3 + crate::stats::COLUMNS.len());
+    values.push(rusqlite::types::Value::Integer(hand_db_id));
+    values.push(rusqlite::types::Value::Integer(player_id));
+    values.push(match stats.position {
+        Some(p) => rusqlite::types::Value::Integer(i64::from(p)),
+        None => rusqlite::types::Value::Null,
+    });
+    for col in crate::stats::COLUMNS {
+        values.push(rusqlite::types::Value::Integer(stats.get(col).unwrap_or(0)));
+    }
+    conn.prepare_cached(&SQL)?
+        .execute(rusqlite::params_from_iter(values))?;
+    Ok(())
+}
+
+fn rebuild_derived_in_tx(conn: &Connection) -> Result<DerivedRebuild, StorageError> {
+    conn.execute_batch("DROP TABLE IF EXISTS hand_player_stats;")?;
+    let create_sql = create_hand_player_stats_sql();
+    conn.execute_batch(&create_sql)?;
+
+    let mut stmt = conn.prepare("SELECT id, platform, site_hand_id FROM hands ORDER BY id")?;
+    let hands_meta: Vec<(i64, String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<Result<_, _>>()?;
+    drop(stmt);
+
+    let count = hands_meta.len();
+    for (hand_id, platform_str, site_hand_id_str) in hands_meta {
+        let hand = match load_hand_by_id(conn, hand_id) {
+            Ok(h) => h,
+            Err(e) => {
+                return Err(StorageError::DerivedRebuildFailed {
+                    platform: platform_str,
+                    site_hand_id: site_hand_id_str,
+                    source: Box::new(e),
+                });
+            }
+        };
+
+        let mut p_stmt = conn.prepare_cached(
+            "SELECT p.screen_name, hp.player_id FROM hand_players hp
+             JOIN players p ON p.id = hp.player_id WHERE hp.hand_id = ?1",
+        )?;
+        let p_rows: Vec<(String, i64)> = p_stmt
+            .query_map(params![hand_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        let p_map: HashMap<String, i64> = p_rows.into_iter().collect();
+
+        let derived = crate::stats::derive_hand_stats(&hand);
+        for st in &derived {
+            if let Some(&pid) = p_map.get(&st.player_name) {
+                insert_player_stats(conn, hand_id, pid, st)?;
+            }
+        }
+    }
+
+    let now = now_utc();
+    conn.prepare_cached(
+        "INSERT INTO derived_cache (name, version, built_at) VALUES ('hand_player_stats', ?1, ?2)
+         ON CONFLICT(name) DO UPDATE SET version = excluded.version, built_at = excluded.built_at",
+    )?
+    .execute(params![crate::stats::STATS_VERSION, now])?;
+
+    Ok(DerivedRebuild {
+        hands: count,
+        version: crate::stats::STATS_VERSION,
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -801,6 +939,7 @@ fn identify_snapshot(conn: &mut Connection) -> Result<DatabaseKind, StorageError
 /// SQLite-backed repository managing schema initialization and batch ingestion.
 pub struct SqliteRepository {
     conn: Connection,
+    rebuilt_on_open: Option<DerivedRebuild>,
 }
 
 impl SqliteRepository {
@@ -895,7 +1034,56 @@ impl SqliteRepository {
             tx.pragma_update(None, "user_version", index_i64(next + 1))?;
             tx.commit()?;
         }
-        Ok(Self { conn })
+
+        let cached_version: Option<i64> = conn
+            .query_row(
+                "SELECT version FROM derived_cache WHERE name = 'hand_player_stats'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let mut rebuilt_on_open = None;
+        if cached_version != Some(crate::stats::STATS_VERSION) {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let locked_version: Option<i64> = tx
+                .query_row(
+                    "SELECT version FROM derived_cache WHERE name = 'hand_player_stats'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if locked_version != Some(crate::stats::STATS_VERSION) {
+                let rebuild = rebuild_derived_in_tx(&tx)?;
+                tx.commit()?;
+                rebuilt_on_open = Some(rebuild);
+            } else {
+                tx.commit()?;
+            }
+        }
+
+        Ok(Self {
+            conn,
+            rebuilt_on_open,
+        })
+    }
+
+    /// Rebuild summary if the statistics cache was rebuilt when the database was opened.
+    #[must_use]
+    pub fn rebuilt_on_open(&self) -> Option<DerivedRebuild> {
+        self.rebuilt_on_open
+    }
+
+    /// Unconditionally rebuilds the derived statistics cache for every stored hand.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] if a hand cannot be loaded or a database write fails.
+    pub fn rebuild_derived(&mut self) -> Result<DerivedRebuild, StorageError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let rebuild = rebuild_derived_in_tx(&tx)?;
+        tx.commit()?;
+        Ok(rebuild)
     }
 
     /// Changes how long a write waits for another connection's lock ([`DEFAULT_BUSY_TIMEOUT`]
@@ -1079,6 +1267,21 @@ impl SqliteRepository {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        let found_version: Option<i64> = tx
+            .query_row(
+                "SELECT version FROM derived_cache WHERE name = 'hand_player_stats'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if found_version != Some(crate::stats::STATS_VERSION) {
+            return Err(StorageError::StaleDerivedCache {
+                found: found_version,
+                expected: crate::stats::STATS_VERSION,
+            });
+        }
+
         let mut stats = BatchInsertStats::default();
 
         // Register every import run referenced by this batch.

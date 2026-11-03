@@ -5,11 +5,13 @@ Derived from `docs/BLUEPRINT.md` §8 with updates from the v3.6 specification (`
 
 ---
 
-- **Derived statistics** (positions, VPIP/PFR, all-in EV, bb/100) belong to a later stats layer.
-  The schema stores everything they need. Compute bb-normalized figures per currency, or convert
-  explicitly. Straddles are forced posts: exclude them from VPIP and PFR. Heads-up has two
-  positions: the button is the small blind (SB, code 9) and the other player the BB (code 8).
-  Definitions are in `docs/stats.md`; the work is `docs/SPEC_v3.7.md` (M13–M16).
+- **Derived statistics.** The derived cache (M13) is implemented. Opportunity counters (M14),
+  results/sessions/reports (M15), all-in equity (M16), and filters (M17) remain deferred.
+- An open that starts while another process rebuilds the statistics cache waits up to 5 s and
+  then fails with a lock error; run it again;
+- A stored hand that cannot be loaded makes the cache rebuild, and therefore every open by a
+  v3.7 build, fail with an error naming the hand, until the row is repaired outside
+  `poker_tracker`.
 - **Currency conversion** (e.g. CAD and USD results combined) is a reporting concern. Storage
   never mixes currencies.
 - **Game variants.** The model is Hold'em: two hole-card slots, NL cash. Omaha, other limits and
@@ -47,4 +49,3 @@ Derived from `docs/BLUEPRINT.md` §8 with updates from the v3.6 specification (`
   re-imported once.
 - **The betting replay assumes No-Limit.** Pot-Limit and Fixed-Limit support would add
   bet-size rules.
-

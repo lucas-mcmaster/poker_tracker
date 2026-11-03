@@ -11,13 +11,15 @@ use tempfile::NamedTempFile;
 
 use common::{
     EV_CASHOUT, EV_CASHOUT_RECEIVED, ONE_CARD_SHOW_AFTER_FOLD, REAL_SESSION,
-    RIT_THREE_TIMES_PREFLOP, WALK, gg,
+    RIT_THREE_TIMES_PREFLOP, SAMPLE_SESSION, WALK, gg,
 };
 use poker_tracker::domain::{CanonicalHand, CurrencyCode, Platform};
-use poker_tracker::parser::{GgPokerParser, HandParser};
+use poker_tracker::parser::{GgPokerParser, HandParser, ParserRegistry};
+use poker_tracker::pipeline::{DirectoryIngester, PipelineError};
+use poker_tracker::stats::{COLUMNS, STATS_VERSION};
 use poker_tracker::storage::{
-    APPLICATION_ID, DeletedImportRun, HandSource, MIGRATIONS, QuarantinedHand, SCHEMA_VERSION,
-    SqliteRepository, StorageError, hand_text_sha256,
+    APPLICATION_ID, DeletedImportRun, DerivedRebuild, HandSource, MIGRATIONS, QuarantinedHand,
+    SCHEMA_VERSION, SqliteRepository, StorageError, hand_text_sha256,
 };
 use uuid::Uuid;
 
@@ -681,5 +683,339 @@ fn a_foreign_database_is_refused_without_waiting_for_the_busy_timeout() {
         start.elapsed() < std::time::Duration::from_secs(1),
         "refusal took {:?}",
         start.elapsed()
+    );
+}
+
+#[test]
+fn rows_written_on_insert_equal_rows_after_rebuild_for_all_corpus_hands() {
+    let mut all_hands = real_hands();
+    let v36_dir = std::path::Path::new("tests/fixtures/ggpoker/v3_6");
+    let mut paths: Vec<_> = std::fs::read_dir(v36_dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|ext| ext == "txt"))
+        .collect();
+    paths.sort();
+    for p in paths {
+        let content = std::fs::read_to_string(p).unwrap();
+        for (_, res) in gg().parse_session(&content) {
+            all_hands.push(res.unwrap());
+        }
+    }
+    assert_eq!(all_hands.len(), 1283);
+
+    let temp_db = NamedTempFile::new().unwrap();
+    let mut repo = SqliteRepository::open(temp_db.path()).unwrap();
+    let stats = repo.insert_hands_batch(&all_hands).unwrap();
+    assert_eq!(stats.hands_inserted, 1283);
+
+    let query_rows = |repo: &SqliteRepository| -> Vec<Vec<i64>> {
+        let sql = format!(
+            "SELECT hand_id, player_id, COALESCE(position, -1), {} FROM hand_player_stats ORDER BY hand_id, player_id",
+            COLUMNS.join(", ")
+        );
+        let mut stmt = repo.connection().prepare(&sql).unwrap();
+        let num_cols = 3 + COLUMNS.len();
+        stmt.query_map([], |row| {
+            let mut v = Vec::with_capacity(num_cols);
+            for i in 0..num_cols {
+                v.push(row.get::<_, i64>(i)?);
+            }
+            Ok(v)
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+    };
+
+    let before = query_rows(&repo);
+    assert_eq!(before.len(), 6840);
+
+    let rebuild = repo.rebuild_derived().unwrap();
+    assert_eq!(rebuild.hands, 1283);
+    assert_eq!(rebuild.version, STATS_VERSION);
+
+    let after = query_rows(&repo);
+    assert_eq!(before, after);
+}
+
+#[test]
+fn deleting_derived_cache_row_and_reopening_rebuilds_and_reports() {
+    let temp_db = NamedTempFile::new().unwrap();
+    let mut repo = SqliteRepository::open(temp_db.path()).unwrap();
+    repo.insert_hands_batch(&[parse(WALK), parse(EV_CASHOUT)])
+        .unwrap();
+
+    repo.connection()
+        .execute(
+            "DELETE FROM derived_cache WHERE name = 'hand_player_stats'",
+            [],
+        )
+        .unwrap();
+    drop(repo);
+
+    let repo2 = SqliteRepository::open(temp_db.path()).unwrap();
+    let rebuild = repo2.rebuilt_on_open();
+    assert_eq!(
+        rebuild,
+        Some(DerivedRebuild {
+            hands: 2,
+            version: STATS_VERSION,
+        })
+    );
+}
+
+#[test]
+fn delete_import_run_removes_derived_cache_rows() {
+    let mut repo = SqliteRepository::open_in_memory().unwrap();
+    let run = Uuid::now_v7();
+    repo.insert_sourced_hands_batch(
+        &[parse(WALK), parse(EV_CASHOUT)],
+        &[
+            source(run, "f.txt", 1, WALK),
+            source(run, "f.txt", 50, EV_CASHOUT),
+        ],
+    )
+    .unwrap();
+    assert!(scalar(&repo, "SELECT COUNT(*) FROM hand_player_stats") > 0);
+
+    repo.delete_import_run(run).unwrap();
+    assert_eq!(scalar(&repo, "SELECT COUNT(*) FROM hand_player_stats"), 0);
+}
+
+#[test]
+fn v3_4_database_cache_is_built_on_upgrade() {
+    let temp_db = NamedTempFile::new().unwrap();
+    write_v3_4_database(temp_db.path());
+    let repo = SqliteRepository::open(temp_db.path()).unwrap();
+    assert_eq!(
+        repo.rebuilt_on_open(),
+        Some(DerivedRebuild {
+            hands: 1,
+            version: STATS_VERSION,
+        })
+    );
+    assert_eq!(
+        scalar(
+            &repo,
+            "SELECT version FROM derived_cache WHERE name = 'hand_player_stats'"
+        ),
+        STATS_VERSION
+    );
+}
+
+#[test]
+fn four_concurrent_opens_of_stale_database_rebuild_exactly_once() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("stale.sqlite");
+    {
+        let mut repo = SqliteRepository::open(&path).unwrap();
+        repo.insert_hands_batch(&[parse(WALK), parse(EV_CASHOUT)])
+            .unwrap();
+        repo.connection()
+            .execute(
+                "DELETE FROM derived_cache WHERE name = 'hand_player_stats'",
+                [],
+            )
+            .unwrap();
+    }
+
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+    let opens: Vec<_> = (0..4)
+        .map(|_| {
+            let (path, barrier) = (path.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                barrier.wait();
+                SqliteRepository::open(&path).map(|repo| repo.rebuilt_on_open())
+            })
+        })
+        .collect();
+
+    let mut rebuild_count = 0;
+    for open in opens {
+        let rebuilt = open.join().unwrap().unwrap();
+        if rebuilt.is_some() {
+            rebuild_count += 1;
+        }
+    }
+    assert_eq!(
+        rebuild_count, 1,
+        "exactly one concurrent open performed the rebuild"
+    );
+
+    let repo = SqliteRepository::open(&path).unwrap();
+    assert_eq!(
+        scalar(
+            &repo,
+            "SELECT version FROM derived_cache WHERE name = 'hand_player_stats'"
+        ),
+        STATS_VERSION
+    );
+    assert!(scalar(&repo, "SELECT COUNT(*) FROM hand_player_stats") > 0);
+}
+
+#[test]
+fn version_guard_rejects_stale_cache_and_pipeline_quarantines_nothing() {
+    let temp_db = NamedTempFile::new().unwrap();
+    let mut repo_a = SqliteRepository::open(temp_db.path()).unwrap();
+    let run = Uuid::now_v7();
+    let hands = vec![parse(WALK)];
+    let sources = vec![source(run, "file.txt", 1, WALK)];
+
+    // 1. Through a second connection set version to STATS_VERSION + 1
+    {
+        let conn_b = rusqlite::Connection::open(temp_db.path()).unwrap();
+        conn_b
+            .execute(
+                "UPDATE derived_cache SET version = ?1 WHERE name = 'hand_player_stats'",
+                [STATS_VERSION + 1],
+            )
+            .unwrap();
+    }
+
+    let err1 = repo_a
+        .insert_sourced_hands_batch(&hands, &sources)
+        .err()
+        .unwrap();
+    assert!(
+        matches!(
+            &err1,
+            StorageError::StaleDerivedCache {
+                found: Some(v),
+                expected
+            } if *v == STATS_VERSION + 1 && *expected == STATS_VERSION
+        ),
+        "expected StaleDerivedCache with found Some, got {err1:?}"
+    );
+    assert_eq!(scalar(&repo_a, "SELECT COUNT(*) FROM hands"), 0);
+    assert_eq!(scalar(&repo_a, "SELECT COUNT(*) FROM players"), 0);
+    assert_eq!(scalar(&repo_a, "SELECT COUNT(*) FROM hand_sightings"), 0);
+    assert_eq!(scalar(&repo_a, "SELECT COUNT(*) FROM import_runs"), 0);
+    assert_eq!(scalar(&repo_a, "SELECT COUNT(*) FROM quarantined_hands"), 0);
+
+    // 2. With derived_cache row deleted instead, found is None
+    {
+        let conn_b = rusqlite::Connection::open(temp_db.path()).unwrap();
+        conn_b
+            .execute(
+                "DELETE FROM derived_cache WHERE name = 'hand_player_stats'",
+                [],
+            )
+            .unwrap();
+    }
+    let err2 = repo_a
+        .insert_sourced_hands_batch(&hands, &sources)
+        .err()
+        .unwrap();
+    assert!(
+        matches!(
+            &err2,
+            StorageError::StaleDerivedCache {
+                found: None,
+                expected
+            } if *expected == STATS_VERSION
+        ),
+        "expected StaleDerivedCache with found None, got {err2:?}"
+    );
+
+    // 3. Reopening rebuilds, and the same insert then succeeds
+    drop(repo_a);
+    let mut repo_reopened = SqliteRepository::open(temp_db.path()).unwrap();
+    let stats = repo_reopened
+        .insert_sourced_hands_batch(&hands, &sources)
+        .unwrap();
+    assert_eq!(stats.hands_inserted, 1);
+    assert_eq!(scalar(&repo_reopened, "SELECT COUNT(*) FROM hands"), 1);
+
+    // 4. Through the pipeline, a stale insert is a PipelineError::Storage and quarantines nothing
+    {
+        let conn_b = rusqlite::Connection::open(temp_db.path()).unwrap();
+        conn_b
+            .execute(
+                "UPDATE derived_cache SET version = ?1 WHERE name = 'hand_player_stats'",
+                [99],
+            )
+            .unwrap();
+    }
+    let exports_dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(exports_dir.path().join("s.txt"), SAMPLE_SESSION).unwrap();
+    let mut reg = ParserRegistry::new();
+    reg.register(GgPokerParser::new(CurrencyCode::CAD));
+    let pipe_res =
+        DirectoryIngester::default().ingest_directory(exports_dir.path(), &reg, &mut repo_reopened);
+    assert!(
+        matches!(pipe_res, Err(PipelineError::Storage { .. })),
+        "pipeline must fail with Storage error, got {pipe_res:?}"
+    );
+    assert_eq!(
+        scalar(&repo_reopened, "SELECT COUNT(*) FROM quarantined_hands"),
+        0
+    );
+}
+
+#[test]
+fn rebuild_failure_on_unloadable_hand_fails_closed_and_leaves_database_untouched() {
+    let temp_db = NamedTempFile::new().unwrap();
+    let mut repo = SqliteRepository::open(temp_db.path()).unwrap();
+    repo.insert_hands_batch(&[parse(WALK)]).unwrap();
+
+    let plain_conn = rusqlite::Connection::open(temp_db.path()).unwrap();
+    let count_before: i64 = plain_conn
+        .query_row("SELECT COUNT(*) FROM hand_player_stats", [], |r| r.get(0))
+        .unwrap();
+    assert!(count_before > 0);
+
+    // Corrupt one action and delete the derived_cache row
+    repo.connection()
+        .execute(
+            "UPDATE actions SET action_type = 'UnrecognizedActionType' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+    repo.connection()
+        .execute(
+            "DELETE FROM derived_cache WHERE name = 'hand_player_stats'",
+            [],
+        )
+        .unwrap();
+    drop(repo);
+
+    let err = SqliteRepository::open(temp_db.path()).err().unwrap();
+    match &err {
+        StorageError::DerivedRebuildFailed {
+            platform,
+            site_hand_id,
+            source,
+        } => {
+            assert_eq!(platform, "GGPoker");
+            assert_eq!(site_hand_id, "HD140646565");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("HD140646565"),
+                "message must contain hand id: {msg}"
+            );
+            assert!(matches!(**source, StorageError::CorruptRow { .. }));
+        }
+        _ => panic!("expected DerivedRebuildFailed, got {err:?}"),
+    }
+
+    // Inspect with plain rusqlite connection: cache table and derived_cache are as before the open
+    let cache_rows: i64 = plain_conn
+        .query_row(
+            "SELECT COUNT(*) FROM derived_cache WHERE name = 'hand_player_stats'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        cache_rows, 0,
+        "derived_cache row was deleted and not recreated"
+    );
+    let count_after: i64 = plain_conn
+        .query_row("SELECT COUNT(*) FROM hand_player_stats", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        count_after, count_before,
+        "hand_player_stats was preserved via rollback"
     );
 }

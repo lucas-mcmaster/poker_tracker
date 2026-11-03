@@ -4,6 +4,7 @@ History only, never a specification. The current spec and living rules are liste
 
 | Version | Crate | Tests | Summary |
 | :--- | :--- | :--- | :--- |
+| v3.7 (M13) | 0.5.0 | 138 | Derived statistics cache (migration 3), player positions, M13 basic facts/counters, automatic rebuild on open, and CLI --rebuild-stats. |
 | v3.6.1 | 0.5.0 | 123 | Audit fixes: refuse six never-observed hand shapes, summary-card and `won`/`collected` checks completed, database identity read as one snapshot (foreign files refused at once), docs synced with code. |
 | v3.6 | 0.5.0 | 121 | Closes four §8 limitations using real GGPoker data: heads-up summary labels, uncontested summary shows, straddles, and EV Cashout receiving side; verified across 10 session exports (989 hands). |
 | v3.5 | 0.5.0 | 104 | Fixes from two reviews of v3.4 and an independent code review: betting replay (short all-ins, raise legality, minimum sizes, incomplete raises, blind sizes, all-in flag), side-pot eligibility, `Dealt to`/order/summary grammar rules, raw text + SHA-256 and `ContentConflict`, quarantine, true micro-units (migration 2), sightings-based undo, database identity, lock handling, stack-continuity warnings, CLI exit codes, extraction tool and lockfile. Details: blueprint §0. |
@@ -11,6 +12,18 @@ History only, never a specification. The current spec and living rules are liste
 | v3.3 | — | 64 | Site- and currency-independent model: `CurrencyCode`, `PotDeduction`, `PlayerAdjustment`, object-safe `HandParser`, `ParserRegistry`, `--ggpoker-currency`. |
 | v3.2 | — | 55 | Fixes from the review of v3.1 against the real export: per-milestone file variants, lossless money, multi-run boards, dead blinds, EV Cashout, one-card shows, strict validation. |
 | v3.1 | — | — | The original blueprint (Milestone 2 did not compile). |
+
+## v3.6.1 → v3.7 (in progress)
+
+- **M13 (Derived statistics cache, positions and basic facts):**
+  - Schema migration 3 adds `derived_cache` metadata table (`version = 1`, `STATS_VERSION = 1`).
+  - Derived cache table `hand_player_stats` automatically populated on insert savepoint and rebuilt on database open under `BEGIN IMMEDIATE` if cache is absent or stale.
+  - Strict version guard in `insert_sourced_hands_batch` prevents inserting into stale cache without corrupting quarantine.
+  - CLI `--rebuild-stats` forces full cache recomputation from stored canonical hands.
+  - 10-seat positional mapping (`assign_positions`) supporting heads-up through full ring.
+  - M13 counters and basic facts: `hands`, `p_walk`, `p_vpip`, `p_pfr_opp`, `p_pfr`, street action counts (`bets`, `raises`, `calls`, `checks`, `folds`), street saw indicators (`f_saw`, `t_saw`, `r_saw`), showdown indicators (`sd_went`, `sd_won`), and win indicators (`won_hand`, `f_saw_won`).
+
+Final M13 test count: 138 tests passing (zero failures).
 
 ## v3.6 → v3.6.1 (audit fixes)
 

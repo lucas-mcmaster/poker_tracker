@@ -19,6 +19,7 @@ use common::{FIXTURE_CURRENCY, SAMPLE_SESSION, gg};
 use poker_tracker::domain::{CanonicalHand, CurrencyCode};
 use poker_tracker::parser::{GgPokerParser, HandParser, ParserRegistry};
 use poker_tracker::pipeline::{DirectoryIngester, StackSnapshot, check_stack_continuity};
+use poker_tracker::stats::position_label;
 use poker_tracker::storage::SqliteRepository;
 
 struct SessionFileInfo {
@@ -335,4 +336,154 @@ fn opponent_hashes_are_isolated_to_single_sessions() {
             );
         }
     }
+}
+
+#[test]
+fn hero_positions_and_m13_counters_match_pinned_tables() {
+    let fixtures_dir = Path::new("tests/fixtures/ggpoker/v3_6");
+    let ingester = DirectoryIngester::default();
+    let mut repo = SqliteRepository::open_in_memory().unwrap();
+
+    let report = ingester
+        .ingest_directory(fixtures_dir, &registry(), &mut repo)
+        .unwrap();
+    assert_eq!(report.hands_ingested, 989);
+
+    // Verify positions for Hero across the 989 hands
+    let mut stmt = repo
+        .connection()
+        .prepare(
+            "SELECT hps.position, h.max_seats FROM hand_player_stats hps
+             JOIN hand_players hp ON hp.hand_id = hps.hand_id AND hp.player_id = hps.player_id
+             JOIN hands h ON h.id = hps.hand_id
+             WHERE hp.is_hero = 1",
+        )
+        .unwrap();
+    let hero_pos_rows: Vec<(Option<u8>, u8)> = stmt
+        .query_map([], |row| {
+            let pos_code: Option<i64> = row.get(0)?;
+            let max_seats: i64 = row.get(1)?;
+            Ok((pos_code.map(|c| c as u8), max_seats as u8))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+
+    assert_eq!(hero_pos_rows.len(), 989);
+    let mut pos_counts: std::collections::HashMap<&'static str, usize> =
+        std::collections::HashMap::new();
+    let mut null_positions = 0;
+    for (pos_code, max_seats) in hero_pos_rows {
+        match pos_code {
+            Some(code) => {
+                let label = position_label(code, max_seats);
+                *pos_counts.entry(label).or_insert(0) += 1;
+            }
+            None => null_positions += 1,
+        }
+    }
+
+    assert_eq!(
+        null_positions, 0,
+        "No player-hand in the corpus has a NULL position"
+    );
+    assert_eq!(pos_counts.get("EP"), Some(&96));
+    assert_eq!(pos_counts.get("MP"), Some(&139));
+    assert_eq!(pos_counts.get("CO"), Some(&178));
+    assert_eq!(pos_counts.get("BTN"), Some(&185));
+    assert_eq!(pos_counts.get("SB"), Some(&197));
+    assert_eq!(pos_counts.get("BB"), Some(&194));
+
+    // Verify all 6,840 player-hands in corpus have no NULL positions
+    let null_all: i64 = repo
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM hand_player_stats WHERE position IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(null_all, 0);
+
+    // Sum Hero's counters for v3.6 folder
+    let hero_sums_v36 = |col: &str| -> i64 {
+        let sql = format!(
+            "SELECT SUM(hps.{col}) FROM hand_player_stats hps
+             JOIN hand_players hp ON hp.hand_id = hps.hand_id AND hp.player_id = hps.player_id
+             WHERE hp.is_hero = 1"
+        );
+        repo.connection().query_row(&sql, [], |r| r.get(0)).unwrap()
+    };
+
+    assert_eq!(hero_sums_v36("hands"), 989);
+    assert_eq!(hero_sums_v36("p_walk"), 35);
+    assert_eq!(hero_sums_v36("p_vpip"), 258);
+    assert_eq!(hero_sums_v36("p_pfr_opp"), 954);
+    assert_eq!(hero_sums_v36("p_pfr"), 224);
+    assert_eq!(hero_sums_v36("f_saw"), 198);
+    assert_eq!(hero_sums_v36("t_saw"), 133);
+    assert_eq!(hero_sums_v36("r_saw"), 98);
+    assert_eq!(hero_sums_v36("sd_went"), 55);
+    assert_eq!(hero_sums_v36("sd_won"), 26);
+    assert_eq!(hero_sums_v36("won_hand"), 193);
+    assert_eq!(hero_sums_v36("f_saw_won"), 87);
+
+    // Action counts for Hero in v3.6 folder
+    assert_eq!(hero_sums_v36("p_bets"), 0);
+    assert_eq!(hero_sums_v36("p_raises"), 228);
+    assert_eq!(hero_sums_v36("p_calls"), 47);
+    assert_eq!(hero_sums_v36("p_checks"), 30);
+    assert_eq!(hero_sums_v36("p_folds"), 685);
+
+    assert_eq!(hero_sums_v36("f_bets"), 60);
+    assert_eq!(hero_sums_v36("f_raises"), 13);
+    assert_eq!(hero_sums_v36("f_calls"), 19);
+    assert_eq!(hero_sums_v36("f_checks"), 107);
+    assert_eq!(hero_sums_v36("f_folds"), 36);
+
+    assert_eq!(hero_sums_v36("t_bets"), 35);
+    assert_eq!(hero_sums_v36("t_raises"), 7);
+    assert_eq!(hero_sums_v36("t_calls"), 25);
+    assert_eq!(hero_sums_v36("t_checks"), 55);
+    assert_eq!(hero_sums_v36("t_folds"), 22);
+
+    assert_eq!(hero_sums_v36("r_bets"), 23);
+    assert_eq!(hero_sums_v36("r_raises"), 11);
+    assert_eq!(hero_sums_v36("r_calls"), 6);
+    assert_eq!(hero_sums_v36("r_checks"), 35);
+    assert_eq!(hero_sums_v36("r_folds"), 24);
+
+    // Now test v3.5 file (294 hands)
+    let mut repo35 = SqliteRepository::open_in_memory().unwrap();
+    let v35_hands: Vec<CanonicalHand> = gg()
+        .parse_session(common::REAL_SESSION)
+        .map(|(_, r)| r.unwrap())
+        .collect();
+    assert_eq!(v35_hands.len(), 294);
+    repo35.insert_hands_batch(&v35_hands).unwrap();
+
+    let hero_sums_v35 = |col: &str| -> i64 {
+        let sql = format!(
+            "SELECT SUM(hps.{col}) FROM hand_player_stats hps
+             JOIN hand_players hp ON hp.hand_id = hps.hand_id AND hp.player_id = hps.player_id
+             WHERE hp.is_hero = 1"
+        );
+        repo35
+            .connection()
+            .query_row(&sql, [], |r| r.get(0))
+            .unwrap()
+    };
+
+    assert_eq!(hero_sums_v35("hands"), 294);
+    assert_eq!(hero_sums_v35("p_walk"), 15);
+    assert_eq!(hero_sums_v35("p_vpip"), 67);
+    assert_eq!(hero_sums_v35("p_pfr_opp"), 279);
+    assert_eq!(hero_sums_v35("p_pfr"), 57);
+    assert_eq!(hero_sums_v35("f_saw"), 50);
+    assert_eq!(hero_sums_v35("t_saw"), 29);
+    assert_eq!(hero_sums_v35("r_saw"), 23);
+    assert_eq!(hero_sums_v35("sd_went"), 16);
+    assert_eq!(hero_sums_v35("sd_won"), 8);
+    assert_eq!(hero_sums_v35("won_hand"), 65);
+    assert_eq!(hero_sums_v35("f_saw_won"), 28);
 }

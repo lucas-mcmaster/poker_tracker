@@ -140,3 +140,33 @@ Site-specific text format rules observed in real exports:
     - An uncontested winner may show 1 or 2 cards, or not show.
     - A player still in a contested hand must show, with one outcome per runout.
 
+---
+
+## 3. Derived data (`src/stats/`, `hand_player_stats`)
+
+Rules governing derived statistics and the derived cache introduced in v3.7 (M13):
+
+### Cache lifecycle and isolation
+
+- **Pure cache:** `hand_player_stats` is strictly a derived read/reporting cache computed from canonical hands. Ingestion, validation, and duplicate detection never read `hand_player_stats`.
+- **Versioning:** Cache versioning is tracked by the single-row `derived_cache (id, version, updated_at)` table (`id = 1`) and the code constant `STATS_VERSION` (`src/stats/mod.rs`). Bumping any definition in `docs/stats.md` requires incrementing `STATS_VERSION` in the same commit.
+- **Automatic rebuild on open:** Opening a database (`SqliteRepository::open`) inspects `derived_cache` under `BEGIN IMMEDIATE`. If the table is empty or its `version != STATS_VERSION`, the cache is completely rebuilt (`rebuild_derived_in_tx`) before the connection is returned, and reported via `rebuilt_on_open()`.
+- **Savepoint population:** Newly imported hands have their derived stats computed and written within their per-hand savepoint.
+- **Version guard:** `SqliteRepository::insert_sourced_hands_batch` inspects `derived_cache.version` before opening any savepoint. If `version != STATS_VERSION` or the row is missing, insertion fails immediately with `StorageError::StaleDerivedCache` without altering the database. In the pipeline, this is treated as a batch-level error and quarantines nothing.
+- **Unloadable hand failure:** If any stored hand cannot be loaded into a `CanonicalHand` during cache rebuild, the rebuild aborts immediately and open fails with `StorageError::DerivedRebuildFailed { platform, site_hand_id }`. No stale or partial cache is committed.
+- **Forced rebuild:** Cache rebuild can be explicitly triggered via `SqliteRepository::rebuild_derived` and the CLI flag `--rebuild-stats`.
+- **Cascading deletion:** Deleting an import run (`delete_import_run`) removes canonical hands, cascading to delete all corresponding rows in `hand_player_stats`.
+
+### Player positions (`src/stats/mod.rs`, `docs/stats.md` §2)
+
+- Table sizes supported: 2 to 10 seated players.
+- **Heads-up (2 players):** The button is the small blind (`SB`, code 9); the other player is the big blind (`BB`, code 8).
+- **Full ring and short-handed (3 to 10 players):**
+  - Button seat is assigned `BTN` (code 7).
+  - First player clockwise from button posting small blind is assigned `SB` (code 9).
+  - First player clockwise from SB posting big blind is assigned `BB` (code 8).
+  - Remaining seats between BB and BTN clockwise are labeled in order:
+    - Early positions: `UTG` (0), `UTG+1` (1), `UTG+2` (2).
+    - Middle positions: `LJ` (3), `HJ` (4), `MP` (5).
+    - Cutoff: `CO` (6).
+- **Non-standard arrangements:** If blinds do not match the expected relative seats, positions cannot be unambiguously mapped and all players in that hand are assigned `None` (`NULL` in `hand_player_stats`). Extra posts (third blind or straddles) do not shift the standard positional labels.

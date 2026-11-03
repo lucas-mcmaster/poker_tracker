@@ -118,3 +118,49 @@ fn imports_reimports_and_undoes_runs_from_the_command_line() {
     assert_eq!(code, 3);
     assert!(err.contains("no hand-history files"), "{err}");
 }
+
+#[test]
+fn rebuild_stats_cli_paths_and_errors() {
+    let cwd = TempDir::new().unwrap();
+
+    // --rebuild-stats on a missing file exits 1
+    let (code, _, err) = run(cwd.path(), &["--rebuild-stats", "--db", "missing.sqlite"]);
+    assert_eq!(code, 1);
+    assert!(
+        err.contains("Failed to open SQLite database") || err.contains("no database exists"),
+        "{err}"
+    );
+    assert!(!cwd.path().join("missing.sqlite").exists());
+
+    // --rebuild-stats combined with an input directory exits 2
+    let exports = cwd.path().join("exports");
+    fs::create_dir(&exports).unwrap();
+    fs::write(exports.join("s.txt"), SAMPLE_SESSION).unwrap();
+    let (code, _, err) = run(
+        cwd.path(),
+        &["exports", "--rebuild-stats", "--ggpoker-currency", "CAD"],
+    );
+    assert_eq!(code, 2, "must exit 2 on combined usage: {err}");
+
+    // Also combined with --delete-run exits 2
+    let (code, _, err) = run(
+        cwd.path(),
+        &[
+            "--rebuild-stats",
+            "--delete-run",
+            "0194bf00-0000-7000-8000-000000000000",
+        ],
+    );
+    assert_eq!(code, 2, "must exit 2 on combined usage: {err}");
+
+    // Successful rebuild prints to stdout and exits 0
+    let (code, _, _) = run(cwd.path(), &["exports", "--ggpoker-currency", "CAD"]);
+    assert_eq!(code, 0);
+
+    let (code, out, err) = run(cwd.path(), &["--rebuild-stats"]);
+    assert_eq!(code, 0, "stderr: {err}");
+    assert!(
+        out.contains("Rebuilt statistics for 2 hand(s) (stats version 1)"),
+        "stdout was: {out}"
+    );
+}

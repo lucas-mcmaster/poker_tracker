@@ -223,11 +223,21 @@ CREATE VIEW quarantine_pending AS
 DROP INDEX idx_pot_winners_hand;
 ";
 
+/// Migration 3 (v3.7, M13): derived cache metadata.
+const MIGRATION_0003_DERIVED_CACHE: &str = r"
+CREATE TABLE derived_cache (
+    name TEXT PRIMARY KEY CHECK (length(name) > 0),
+    version INTEGER NOT NULL CHECK (version >= 1),
+    built_at TEXT NOT NULL
+) STRICT;
+";
+
 /// All migrations, in order. Migration *n* (1-based) upgrades `user_version` *n − 1* to *n*.
 /// Append only; never edit or reorder a released entry.
 pub const MIGRATIONS: &[&str] = &[
     MIGRATION_0001_BASELINE,
     MIGRATION_0002_MICRO_UNITS_RAW_TEXT_SIGHTINGS_QUARANTINE,
+    MIGRATION_0003_DERIVED_CACHE,
 ];
 
 /// Schema version this build creates and expects (`PRAGMA user_version`).

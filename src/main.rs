@@ -2,6 +2,7 @@
 //!
 //! - Import: `poker_tracker <input-dir> --ggpoker-currency <CODE> [--db <path>]`
 //! - Undo an import run: `poker_tracker --delete-run <RUN-ID> [--db <path>]`
+//! - Rebuild statistics: `poker_tracker --rebuild-stats [--db <path>]`
 //!
 //! Each supported site is enabled by its own option (given at most once). Sites whose exports
 //! do not state the account currency (GGPoker) take it as the option value, in any letter case.
@@ -24,6 +25,7 @@ const USAGE: &str = "\
 Usage:
   poker_tracker <input-dir> [site options] [--db <path>]   Import hand histories
   poker_tracker --delete-run <RUN-ID> [--db <path>]        Undo one import run
+  poker_tracker --rebuild-stats [--db <path>]              Rebuild statistics cache
   poker_tracker --help                                     Show this help
 
 Site options (enable at least one when importing; each at most once):
@@ -34,6 +36,7 @@ Other options:
   --db <path>                 SQLite database (default: poker_tracker.sqlite)
   --delete-run <RUN-ID>       Undo an import (the Batch Run ID printed by that import). Hands
                               that another import also contained are kept.
+  --rebuild-stats             Rebuild the derived statistics cache for all hands
 
 Exit codes: 0 success, 1 fatal error, 2 usage error, 3 some files or hands were rejected.";
 
@@ -43,6 +46,7 @@ enum Command {
         registry: ParserRegistry,
     },
     DeleteRun(Uuid),
+    RebuildStats,
 }
 
 struct CliArgs {
@@ -73,6 +77,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
     let mut db_path = "poker_tracker.sqlite".to_string();
     let mut registry = ParserRegistry::new();
     let mut delete_run = None;
+    let mut rebuild_stats = false;
     let mut seen: Vec<String> = Vec::new();
     let mut args = args;
     while let Some(arg) = args.next() {
@@ -91,6 +96,13 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
                 let id = Uuid::parse_str(&raw).map_err(|e| format!("invalid run id: {e}"))?;
                 delete_run = Some(id);
             }
+            "--rebuild-stats" => {
+                if seen.iter().any(|f| f == "--rebuild-stats") {
+                    return Err("--rebuild-stats given more than once".to_string());
+                }
+                seen.push("--rebuild-stats".to_string());
+                rebuild_stats = true;
+            }
             "-h" | "--help" => return Ok(Parsed::Help),
             flag if flag.starts_with("--") => return Err(format!("unknown option '{flag}'")),
             _ if input_dir.is_none() => input_dir = Some(arg),
@@ -98,12 +110,19 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
         }
     }
 
-    let command = match (delete_run, input_dir) {
-        (Some(run), None) if registry.is_empty() => Command::DeleteRun(run),
-        (Some(_), _) => {
+    let command = match (rebuild_stats, delete_run, input_dir) {
+        (true, None, None) if registry.is_empty() => Command::RebuildStats,
+        (true, _, _) => {
+            return Err(
+                "--rebuild-stats cannot be combined with an input directory or --delete-run"
+                    .to_string(),
+            );
+        }
+        (false, Some(run), None) if registry.is_empty() => Command::DeleteRun(run),
+        (false, Some(_), _) => {
             return Err("--delete-run cannot be combined with an import".to_string());
         }
-        (None, Some(input_dir)) => {
+        (false, None, Some(input_dir)) => {
             if registry.is_empty() {
                 return Err("no site enabled; pass e.g. --ggpoker-currency CAD".to_string());
             }
@@ -117,7 +136,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
                 registry,
             }
         }
-        (None, None) => return Err("missing <input-dir>".to_string()),
+        (false, None, None) => return Err("missing <input-dir>".to_string()),
     };
     Ok(Parsed::Run(CliArgs { db_path, command }))
 }
@@ -155,6 +174,14 @@ fn delete_run(db_path: &str, run: Uuid) -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    if let Some(rebuild) = repo.rebuilt_on_open()
+        && rebuild.hands > 0
+    {
+        eprintln!(
+            "Statistics cache rebuilt for {} hand(s) (stats version {})",
+            rebuild.hands, rebuild.version
+        );
+    }
     match repo.delete_import_run(run) {
         Ok(deleted) => {
             println!(
@@ -171,6 +198,31 @@ fn delete_run(db_path: &str, run: Uuid) -> ExitCode {
     }
 }
 
+fn rebuild_stats(db_path: &str) -> ExitCode {
+    let mut repo = match SqliteRepository::open_existing(db_path) {
+        Ok(r) => r,
+        Err(err) => {
+            eprintln!("Failed to open SQLite database at '{db_path}': {err}");
+            return ExitCode::from(1);
+        }
+    };
+    let outcome = match repo.rebuilt_on_open() {
+        Some(rebuild) => rebuild,
+        None => match repo.rebuild_derived() {
+            Ok(rebuild) => rebuild,
+            Err(err) => {
+                eprintln!("Failed to rebuild statistics: {err}");
+                return ExitCode::from(1);
+            }
+        },
+    };
+    println!(
+        "Rebuilt statistics for {} hand(s) (stats version {})",
+        outcome.hands, outcome.version
+    );
+    ExitCode::SUCCESS
+}
+
 fn import(db_path: &str, input_dir: &str, registry: &ParserRegistry) -> ExitCode {
     let mut repo = match SqliteRepository::open(db_path) {
         Ok(r) => r,
@@ -179,6 +231,14 @@ fn import(db_path: &str, input_dir: &str, registry: &ParserRegistry) -> ExitCode
             return ExitCode::from(1);
         }
     };
+    if let Some(rebuild) = repo.rebuilt_on_open()
+        && rebuild.hands > 0
+    {
+        eprintln!(
+            "Statistics cache rebuilt for {} hand(s) (stats version {})",
+            rebuild.hands, rebuild.version
+        );
+    }
     match DirectoryIngester::default().ingest_directory(input_dir, registry, &mut repo) {
         Ok(report) => {
             print_report(&report);
@@ -218,5 +278,6 @@ fn main() -> ExitCode {
             input_dir,
             registry,
         } => import(&args.db_path, input_dir, registry),
+        Command::RebuildStats => rebuild_stats(&args.db_path),
     }
 }
