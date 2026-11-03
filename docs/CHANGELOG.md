@@ -1,6 +1,6 @@
 # `poker_tracker` blueprint changelog
 
-History only. The specification is `docs/SPEC_v3.6.md` (and frozen `docs/BLUEPRINT.md` for v3.5 baseline); where this file and the spec disagree, the spec is right.
+History only, never a specification. The current spec and living rules are listed in `AGENTS.md` §1; where this file and them disagree, they are right.
 
 | Version | Crate | Tests | Summary |
 | :--- | :--- | :--- | :--- |

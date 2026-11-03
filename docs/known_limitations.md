@@ -8,7 +8,8 @@ Derived from `docs/BLUEPRINT.md` §8 with updates from the v3.6 specification (`
 - **Derived statistics** (positions, VPIP/PFR, all-in EV, bb/100) belong to a later stats layer.
   The schema stores everything they need. Compute bb-normalized figures per currency, or convert
   explicitly. Straddles are forced posts: exclude them from VPIP and PFR. Heads-up has two
-  positions (BTN/SB, BB).
+  positions: the button is the small blind (SB, code 9) and the other player the BB (code 8).
+  Definitions are in `docs/stats.md`; the work is `docs/SPEC_v3.7.md` (M13–M16).
 - **Currency conversion** (e.g. CAD and USD results combined) is a reporting concern. Storage
   never mixes currencies.
 - **Game variants.** The model is Hold'em: two hole-card slots, NL cash. Omaha, other limits and

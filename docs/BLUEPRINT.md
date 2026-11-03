@@ -1,4 +1,4 @@
-> **Note:** Frozen at v3.5. For v3.6+ specification and current living rules, see `docs/SPEC_v3.6.md`, `docs/invariants.md`, and `docs/known_limitations.md`.
+> **Note:** Frozen at v3.5. The current specification and living rules are in `docs/`; `AGENTS.md` §1 lists them in order of precedence (current spec: `docs/SPEC_v3.7.md`).
 
 # `poker_tracker` — Reference Implementation Blueprint (v3.5)
 
