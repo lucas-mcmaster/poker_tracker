@@ -487,7 +487,7 @@ fn compute_all_in_equity(
             .iter()
             .filter(|a| a.player_name == lp.name && a.action_type == ActionType::PostDeadBlind)
             .map(|a| decimal_to_micro_units(a.amount).unwrap_or(0))
-            .sum();
+            .fold(0i64, |acc, x| acc.saturating_add(x));
         live_contribs.push(invested_micros.saturating_sub(dead_blind_micros));
     }
     let Some(&first_contrib) = live_contribs.first() else {

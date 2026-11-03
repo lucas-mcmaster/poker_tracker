@@ -1150,3 +1150,126 @@ fn canonical_multi_run_hand_uses_first_run_board() {
         "multi-run hand uses first run board"
     );
 }
+
+#[test]
+fn canonical_three_way_all_in_qualifies_with_exact_equity() {
+    let mut p = vec![
+        make_player(1, "Hero", dec!(10), true),
+        make_player(2, "Villain1", dec!(10), false),
+        make_player(3, "Villain2", dec!(10), false),
+    ];
+    // Hole cards matching §7.2 exact equities example
+    p[0].hole_cards = [Some(card("As")), Some(card("Ks"))];
+    p[1].hole_cards = [Some(card("Qh")), Some(card("Qd"))];
+    p[2].hole_cards = [Some(card("Jc")), Some(card("Tc"))];
+
+    let a = vec![
+        make_action(
+            0,
+            Street::Preflop,
+            "Hero",
+            ActionType::PostSmallBlind,
+            dec!(0.05),
+            dec!(0.05),
+            false,
+        ),
+        make_action(
+            1,
+            Street::Preflop,
+            "Villain1",
+            ActionType::PostBigBlind,
+            dec!(0.10),
+            dec!(0.10),
+            false,
+        ),
+        make_action(
+            2,
+            Street::Preflop,
+            "Villain2",
+            ActionType::Raise,
+            dec!(10.00),
+            dec!(10.00),
+            true,
+        ),
+        make_action(
+            3,
+            Street::Preflop,
+            "Hero",
+            ActionType::Call,
+            dec!(9.95),
+            dec!(10.00),
+            true,
+        ),
+        make_action(
+            4,
+            Street::Preflop,
+            "Villain1",
+            ActionType::Call,
+            dec!(9.90),
+            dec!(10.00),
+            true,
+        ),
+    ];
+
+    let mut h = make_canonical_hand(1, p, a, vec![], vec![("Hero", dec!(30.00))]);
+    h.outcome.total_pot = dec!(30.00);
+
+    let stats = derive_hand_stats(&h);
+
+    // All 3 live players must qualify with exact equities from §7.2
+    assert_eq!(stats[0].ev_qualified, 1);
+    assert_eq!(stats[1].ev_qualified, 1);
+    assert_eq!(stats[2].ev_qualified, 1);
+
+    assert_eq!(
+        (stats[0].ev_equity_num, stats[0].ev_equity_den),
+        (61241, 152306)
+    );
+    assert_eq!(
+        (stats[1].ev_equity_num, stats[1].ev_equity_den),
+        (281378, 685377)
+    );
+    assert_eq!(
+        (stats[2].ev_equity_num, stats[2].ev_equity_den),
+        (256829, 1370754)
+    );
+
+    // One half-even rounding of pot after deductions (30.00) minus invested (10.00)
+    assert_eq!(stats[0].ev_net_micros, 2_062_755);
+    assert_eq!(stats[1].ev_net_micros, 2_316_346);
+    assert_eq!(stats[2].ev_net_micros, -4_379_101);
+
+    // Conserves total EV net = 0
+    assert_eq!(
+        stats[0].ev_net_micros + stats[1].ev_net_micros + stats[2].ev_net_micros,
+        0
+    );
+}
+
+#[test]
+fn exact_equity_four_way_preflop() {
+    let hole_cards = [
+        [card("Ah"), card("As")],
+        [card("Kh"), card("Ks")],
+        [card("Qh"), card("Qd")],
+        [card("Jh"), card("Jd")],
+    ];
+    let equities = exact_equity(&hole_cards, &[]).unwrap();
+    assert_eq!(equities.len(), 4);
+
+    // Sum of equity fractions must equal exactly 1
+    let sum_equity: Decimal = equities
+        .iter()
+        .map(|&(num, den)| Decimal::from(num) / Decimal::from(den))
+        .sum();
+    assert_eq!(sum_equity, Decimal::ONE, "4-way equities sum to 1");
+
+    // Aces > Kings > Queens > Jacks
+    let p0 = Decimal::from(equities[0].0) / Decimal::from(equities[0].1);
+    let p1 = Decimal::from(equities[1].0) / Decimal::from(equities[1].1);
+    let p2 = Decimal::from(equities[2].0) / Decimal::from(equities[2].1);
+    let p3 = Decimal::from(equities[3].0) / Decimal::from(equities[3].1);
+    assert!(p0 > p1, "Aces beat Kings in equity");
+    assert!(p1 > p2, "Kings beat Queens in equity");
+    assert!(p2 > p3, "Queens beat Jacks in equity");
+}
