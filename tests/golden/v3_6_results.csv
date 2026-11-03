@@ -1,3 +1,2 @@
-currency,stakes,hands,net,net_per_100,bb_won,bb_per_100,rake,fees,blinds,straddles
-CAD,0.05/0.1,989,-25.79,-2.61,-257.90,-26.08,14.23115,2.500423,29.25,0
-
+currency,stakes,hands,net,net_per_100,bb_won,bb_per_100,rake,fees,blinds,straddles,allin_hands,ev_net,ev_bb_per_100
+CAD,0.05/0.1,989,-25.79,-2.61,-257.90,-26.08,14.23115,2.500423,29.25,0,9,-19.396794,-19.61

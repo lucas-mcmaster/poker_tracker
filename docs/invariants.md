@@ -153,8 +153,9 @@ lifecycle contract is `docs/SPEC_v3.7.md` §2 and the report contract §6.
 - **A cache only.** `hand_player_stats` is computed only from stored canonical hands. Validation,
   ingestion and duplicate detection never read it, and dropping it loses nothing.
 - **Shape.** One row per `hand_players` row: `(hand_id, player_id)` primary key, a nullable
-  `position` code (0–9), and one `INTEGER NOT NULL CHECK (… >= 0)` column per entry of
-  `stats::COLUMNS`, in that order. The table is created by the rebuild, never by `MIGRATIONS`.
+  `position` code (0–9), and one `INTEGER NOT NULL` column per entry of `stats::COLUMNS`, in that
+  order. Every column carries `CHECK (… >= 0)` except `ev_net_micros`, which is signed. The table
+  is created by the rebuild, never by `MIGRATIONS`.
 - **Versioning.** `derived_cache(name, version, built_at)` (migration 3) holds one row,
   `name = 'hand_player_stats'`, with the `STATS_VERSION` the cache was built with. As
   `AGENTS.md` §3.10 says, changing the definition of any stored column (position, counter, money
@@ -221,6 +222,31 @@ lifecycle contract is `docs/SPEC_v3.7.md` §2 and the report contract §6.
   remainders `(T × invested) mod W`, ties to the lower seat number. The parts sum exactly to the
   hand's `Rake` and to its other deductions (a corpus test checks every hand). If `T` or `W` is
   `0`, every part is `0`.
+
+### All-in equity (`docs/stats.md` §6.2)
+
+- **Qualification.** A hand qualifies for all-in equity when all four conditions hold:
+  1. at least two players are live (not folded) at the end;
+  2. the last action that is not an `UncalledBetReturned` is on the preflop, flop or turn (the
+     **all-in street**; cards were still to come);
+  3. every live player's two hole cards are known;
+  4. every live player has the same live contribution (`invested` minus their `PostDeadBlind`
+     amounts): a single pot. Multiway all-ins with side pots are excluded.
+  When any condition fails, the hand does not qualify (`ev_qualified = 0`, equity `0/1`,
+  `ev_net_micros = net_micros`).
+- **Board and deck rule.** Equity enumerates every completion of the board cards dealt by the all-in
+  street (preflop: 0; flop: 3; turn: 4; for multi-run hands, the first run's cards up to that street).
+  Only the board cards and the **live players'** hole cards are removed from the deck; a folded
+  player's cards remain in the deck even when known. A runout won by `k` players awards `1/k`.
+  Multi-run hands evaluate identical equity on the first run's board.
+- **Pot basis.** The equity applies to the pot after **all** deductions: `total_pot − Σ all deductions`
+  (= `Σ payouts`).
+- **EV Cashout rule.** A player who chose EV Cashout keeps their actual net (`ev_net_micros = net_micros`).
+  Their opponents are adjusted normally.
+- **Rounding and stored columns.** `ev_net_micros = round_half_even(num × pot_after / den) − invested + adjustments`
+  (one half-even rounding to micro-units, with `i128` products). When not qualified or when the
+  player took EV Cashout, `ev_net_micros` equals `net_micros`. Equity is stored as the reduced
+  fraction `(ev_equity_num, ev_equity_den)` in lowest terms (`0/1` when not qualified).
 
 ### Reports (`src/report/`, `docs/SPEC_v3.7.md` §6)
 

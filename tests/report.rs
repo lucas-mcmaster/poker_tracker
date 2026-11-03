@@ -138,7 +138,7 @@ fn golden_v3_5_results_row() {
     assert_eq!(lines.len(), 2);
     assert_eq!(
         lines[1],
-        "CAD,0.05/0.1,294,2.86,0.97,28.60,9.73,2.195316,0.353832,8.3,0"
+        "CAD,0.05/0.1,294,2.86,0.97,28.60,9.73,2.195316,0.353832,8.3,0,3,2.48105,8.44"
     );
 }
 
@@ -247,18 +247,17 @@ fn stakes_synthetic_and_parsing() {
     let stored = repo.insert_hands_batch(&[h1, h1b, h2, h3]).unwrap();
     assert!(stored.rejected.is_empty(), "{:?}", stored.rejected);
 
-    let header =
-        "currency,stakes,hands,net,net_per_100,bb_won,bb_per_100,rake,fees,blinds,straddles";
+    let header = "currency,stakes,hands,net,net_per_100,bb_won,bb_per_100,rake,fees,blinds,straddles,allin_hands,ev_net,ev_bb_per_100";
     // 2 hands; net -0.10; $/100 -0.10 / 2 × 100; bb_won -0.10 / 0.10; bb/100 -1.00 / 2 × 100
-    let cad_small = "CAD,0.05/0.1,2,-0.1,-5.00,-1.00,-50.00,0,0,0.1,0";
+    let cad_small = "CAD,0.05/0.1,2,-0.1,-5.00,-1.00,-50.00,0,0,0.1,0,0,-0.1,-50.00";
     // net -0.10; $/100 -10.00; bb_won -0.10 / 0.25 = -0.40; bb/100 -40.00; blinds 0.1
-    let cad_big = "CAD,0.1/0.25,1,-0.1,-10.00,-0.40,-40.00,0,0,0.1,0";
+    let cad_big = "CAD,0.1/0.25,1,-0.1,-10.00,-0.40,-40.00,0,0,0.1,0,0,-0.1,-40.00";
     // 3 hands; net -0.20; $/100 -0.20 / 3 × 100 = -6.67; bb_won -1.00 + -0.40 = -1.40;
     // bb/100 -1.40 / 3 × 100 = -46.67 (the mean of the rows would be -45.00; Σ net / Σ bb gives
     // bb_won -0.44)
-    let cad_all = "CAD,ALL,3,-0.2,-6.67,-1.40,-46.67,0,0,0.2,0";
+    let cad_all = "CAD,ALL,3,-0.2,-6.67,-1.40,-46.67,0,0,0.2,0,0,-0.2,-46.67";
     // net -0.05; $/100 -0.05 × 100; bb_won -0.05 / 0.10; bb/100 -0.5 × 100; blinds the SB
-    let usd_small = "USD,0.05/0.1,1,-0.05,-5.00,-0.50,-50.00,0,0,0.05,0";
+    let usd_small = "USD,0.05/0.1,1,-0.05,-5.00,-0.50,-50.00,0,0,0.05,0,0,-0.05,-50.00";
 
     // 1. All stakes: CAD has two stakes then ALL; USD has one stake and no ALL
     let mut buf = Vec::new();
@@ -313,8 +312,8 @@ fn stakes_synthetic_and_parsing() {
     );
     assert_eq!(
         report_text(&repo, ReportKind::Sessions, &only_big),
-        "currency,platform,table,start,end,duration_seconds,hands,net,bb_per_100\n\
-         CAD,GGPoker,TestTable,2026-08-21T17:00:00,2026-08-21T17:00:00,0,1,-0.1,-40.00\n"
+        "currency,platform,table,start,end,duration_seconds,hands,net,bb_per_100,ev_net\n\
+         CAD,GGPoker,TestTable,2026-08-21T17:00:00,2026-08-21T17:00:00,0,1,-0.1,-40.00,-0.1\n"
     );
     let stats_out = report_text(&repo, ReportKind::Stats, &only_big);
     let stats_lines: Vec<&str> = stats_out.lines().collect();
@@ -424,14 +423,14 @@ fn sessions_duration_gaps_and_dst() {
     // Listed by currency, start time, table, then platform. Net is -0.05 per hand and bb/100
     // is -0.5 × 100 in every session.
     let expected = "\
-currency,platform,table,start,end,duration_seconds,hands,net,bb_per_100
-CAD,GGPoker,TableA,2026-08-21T12:00:00,2026-08-21T12:00:00,0,1,-0.05,-50.00
-CAD,GGPoker,TableSingle,2026-08-21T12:00:00,2026-08-21T12:00:00,0,1,-0.05,-50.00
-CAD,GGPoker,Table30Min,2026-08-21T13:00:00,2026-08-21T13:30:00,1800,2,-0.1,-50.00
-CAD,GGPoker,Table3001,2026-08-21T14:00:00,2026-08-21T14:00:00,0,1,-0.05,-50.00
-CAD,GGPoker,Table3001,2026-08-21T14:30:01,2026-08-21T14:30:01,0,1,-0.05,-50.00
-CAD,GGPoker,TableDST,2026-11-01T01:50:00,2026-11-01T01:10:00,1200,2,-0.1,-50.00
-CAD,GGPoker,TableMixed,2026-11-02T10:00:00,2026-11-02T10:05:00,300,2,-0.1,-50.00
+currency,platform,table,start,end,duration_seconds,hands,net,bb_per_100,ev_net
+CAD,GGPoker,TableA,2026-08-21T12:00:00,2026-08-21T12:00:00,0,1,-0.05,-50.00,-0.05
+CAD,GGPoker,TableSingle,2026-08-21T12:00:00,2026-08-21T12:00:00,0,1,-0.05,-50.00,-0.05
+CAD,GGPoker,Table30Min,2026-08-21T13:00:00,2026-08-21T13:30:00,1800,2,-0.1,-50.00,-0.1
+CAD,GGPoker,Table3001,2026-08-21T14:00:00,2026-08-21T14:00:00,0,1,-0.05,-50.00,-0.05
+CAD,GGPoker,Table3001,2026-08-21T14:30:01,2026-08-21T14:30:01,0,1,-0.05,-50.00,-0.05
+CAD,GGPoker,TableDST,2026-11-01T01:50:00,2026-11-01T01:10:00,1200,2,-0.1,-50.00,-0.1
+CAD,GGPoker,TableMixed,2026-11-02T10:00:00,2026-11-02T10:05:00,300,2,-0.1,-50.00,-0.1
 ";
     assert_eq!(
         report_text(&repo, ReportKind::Sessions, &ReportOptions::default()),

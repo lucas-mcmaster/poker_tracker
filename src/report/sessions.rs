@@ -12,7 +12,7 @@ use crate::storage::StorageError;
 use crate::storage::repository::TIMESTAMP_FORMAT;
 
 pub const SESSIONS_HEADER: &str =
-    "currency,platform,table,start,end,duration_seconds,hands,net,bb_per_100";
+    "currency,platform,table,start,end,duration_seconds,hands,net,bb_per_100,ev_net";
 
 /// The longest start-to-start gap between consecutive hands of one session (inclusive).
 const SESSION_GAP_SECONDS: i64 = 30 * 60;
@@ -28,13 +28,14 @@ pub struct SessionsRow {
     pub hands: i64,
     pub net: String,
     pub bb_per_100: String,
+    pub ev_net: String,
 }
 
 impl SessionsRow {
     #[must_use]
     pub fn to_csv_line(&self) -> String {
         format!(
-            "{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{}",
             self.currency,
             self.platform,
             self.table,
@@ -43,7 +44,8 @@ impl SessionsRow {
             self.duration_seconds,
             self.hands,
             self.net,
-            self.bb_per_100
+            self.bb_per_100,
+            self.ev_net
         )
     }
 }
@@ -63,6 +65,7 @@ struct HandEntry {
     site_hand_id: String,
     net_micros: i64,
     big_blind_micros: i64,
+    ev_net_micros: i64,
 }
 
 /// A hand paired with its time on its table's basis (`docs/stats.md` §6.1).
@@ -187,9 +190,11 @@ pub(crate) fn build_sessions_rows(
             h.utc_offset_seconds, \
             h.site_hand_id, \
             hp.net_micros, \
-            h.big_blind_micros \
+            h.big_blind_micros, \
+            hps.ev_net_micros \
          FROM hands h \
          JOIN hand_players hp ON hp.hand_id = h.id AND hp.is_hero = 1 \
+         JOIN hand_player_stats hps ON hps.hand_id = hp.hand_id AND hps.player_id = hp.player_id \
          WHERE 1 = 1 {clause}"
     );
 
@@ -212,6 +217,7 @@ pub(crate) fn build_sessions_rows(
             site_hand_id: row.get(5)?,
             net_micros: row.get(6)?,
             big_blind_micros: row.get(7)?,
+            ev_net_micros: row.get(8)?,
         });
     }
 
@@ -225,9 +231,11 @@ pub(crate) fn build_sessions_rows(
 fn session_row(session: &[TimedHand]) -> Option<SessionsRow> {
     let ((_, first), (_, last)) = (session.first()?, session.last()?);
     let mut total_net: i64 = 0;
+    let mut total_ev_net: i64 = 0;
     let mut bb_won = BbWon::default();
     for (_, hand) in session {
         total_net = total_net.saturating_add(hand.net_micros);
+        total_ev_net = total_ev_net.saturating_add(hand.ev_net_micros);
         bb_won.add(hand.big_blind_micros, hand.net_micros);
     }
     let hands = i64::try_from(session.len()).unwrap_or(i64::MAX);
@@ -243,6 +251,7 @@ fn session_row(session: &[TimedHand]) -> Option<SessionsRow> {
         hands,
         net: format_exact_money(total_net),
         bb_per_100: format_fixed2(bb_per_100_dec),
+        ev_net: format_exact_money(total_ev_net),
     })
 }
 
@@ -274,6 +283,7 @@ mod tests {
             site_hand_id: id.to_string(),
             net_micros: 0,
             big_blind_micros: 100_000,
+            ev_net_micros: 0,
         }
     }
 

@@ -527,7 +527,11 @@ fn create_hand_player_stats_sql() -> String {
          position INTEGER CHECK (position IS NULL OR (position BETWEEN 0 AND 9)),\n",
     );
     for col in crate::stats::COLUMNS {
-        sql.push_str(&format!("{col} INTEGER NOT NULL CHECK ({col} >= 0),\n"));
+        if *col == "ev_net_micros" {
+            sql.push_str(&format!("{col} INTEGER NOT NULL,\n"));
+        } else {
+            sql.push_str(&format!("{col} INTEGER NOT NULL CHECK ({col} >= 0),\n"));
+        }
     }
     sql.push_str(
         "PRIMARY KEY (hand_id, player_id)\n\

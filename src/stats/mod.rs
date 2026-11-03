@@ -3,18 +3,23 @@
 //! Pure, site-neutral functions that compute player positions and counters from a
 //! [`CanonicalHand`].
 
+pub mod equity;
+pub mod eval;
 pub mod money;
 mod postflop;
 mod preflop;
+
+pub use equity::exact_equity;
 
 use std::collections::{HashMap, HashSet};
 
 use rust_decimal::Decimal;
 
-use crate::domain::canonical::{ActionType, CanonicalHand};
+use crate::domain::canonical::{ActionType, AdjustmentKind, CanonicalHand, Street};
+use crate::domain::{Card, decimal_to_micro_units};
 
 /// Current version of the derived statistics cache schema and definitions.
-pub const STATS_VERSION: i64 = 3;
+pub const STATS_VERSION: i64 = 4;
 
 macro_rules! define_stats_columns {
     ($( $col:ident ),* $(,)?) => {
@@ -32,7 +37,7 @@ macro_rules! define_stats_columns {
         }
 
         impl PlayerHandStats {
-            /// Initializes player stats with default zero counters (`hands = 1`).
+            /// Initializes player stats with default zero counters (`hands = 1`, `ev_equity_den = 1`).
             #[must_use]
             pub fn new(player_name: String, position: Option<u8>) -> Self {
                 let mut stats = Self {
@@ -41,6 +46,7 @@ macro_rules! define_stats_columns {
                     $( $col: 0, )*
                 };
                 stats.hands = 1;
+                stats.ev_equity_den = 1;
                 stats
             }
 
@@ -148,6 +154,12 @@ define_stats_columns! {
     fees_attributed_micros,
     blinds_posted_micros,
     straddles_posted_micros,
+
+    // All-in equity (stats.md §6.2)
+    ev_qualified,
+    ev_equity_num,
+    ev_equity_den,
+    ev_net_micros,
 }
 
 pub(crate) struct ReplayState<'a> {
@@ -385,5 +397,186 @@ pub fn derive_hand_stats(hand: &CanonicalHand) -> Vec<PlayerHandStats> {
         s.straddles_posted_micros = m.straddles_posted_micros;
     }
 
+    compute_all_in_equity(hand, &state, &mut stats);
+
     stats
+}
+
+#[inline]
+fn round_half_even_quotient(prod: i128, den: i128) -> i128 {
+    if den == 0 {
+        return 0;
+    }
+    let q = prod / den;
+    let r = prod % den;
+    let double_r = r.saturating_mul(2);
+    if double_r < den {
+        q
+    } else if double_r > den {
+        q + 1
+    } else if q % 2 == 0 {
+        q
+    } else {
+        q + 1
+    }
+}
+
+fn compute_all_in_equity(
+    hand: &CanonicalHand,
+    state: &ReplayState<'_>,
+    stats: &mut [PlayerHandStats],
+) {
+    let results = match hand.checked_player_results() {
+        Some(res) => res,
+        None => return,
+    };
+
+    // Default every player to unadjusted net_micros, ev_qualified = 0, ev_equity = 0/1
+    for p in &hand.players {
+        if let Some(&idx) = state.name_to_idx.get(p.name.as_str())
+            && let Some(s) = stats.get_mut(idx)
+            && let Some(res) = results.iter().find(|r| r.player_name == p.name)
+        {
+            s.ev_qualified = 0;
+            s.ev_equity_num = 0;
+            s.ev_equity_den = 1;
+            s.ev_net_micros = decimal_to_micro_units(res.net).unwrap_or(0);
+        }
+    }
+
+    // Condition 1: At least two players live at the end
+    let live_players: Vec<&crate::domain::Player> = hand
+        .players
+        .iter()
+        .filter(|p| !state.folded.contains(p.name.as_str()))
+        .collect();
+    if live_players.len() < 2 {
+        return;
+    }
+
+    // Condition 2: Last action not UncalledBetReturned is on preflop, flop, or turn
+    let last_action = hand
+        .actions
+        .iter()
+        .rev()
+        .find(|a| a.action_type != ActionType::UncalledBetReturned);
+    let all_in_street = match last_action.map(|a| a.street) {
+        Some(Street::Preflop) => Street::Preflop,
+        Some(Street::Flop) => Street::Flop,
+        Some(Street::Turn) => Street::Turn,
+        _ => return,
+    };
+
+    // Condition 3: Every live player has both hole cards known
+    let all_cards_known = live_players
+        .iter()
+        .all(|p| matches!(p.hole_cards, [Some(_), Some(_)]));
+    if !all_cards_known {
+        return;
+    }
+
+    // Condition 4: Every live player has equal live contribution (invested - PostDeadBlind)
+    let mut live_contribs = Vec::with_capacity(live_players.len());
+    for lp in &live_players {
+        let Some(res) = results.iter().find(|r| r.player_name == lp.name) else {
+            return;
+        };
+        let invested_micros = decimal_to_micro_units(res.invested).unwrap_or(0);
+        let dead_blind_micros: i64 = hand
+            .actions
+            .iter()
+            .filter(|a| a.player_name == lp.name && a.action_type == ActionType::PostDeadBlind)
+            .map(|a| decimal_to_micro_units(a.amount).unwrap_or(0))
+            .sum();
+        live_contribs.push(invested_micros.saturating_sub(dead_blind_micros));
+    }
+    let Some(&first_contrib) = live_contribs.first() else {
+        return;
+    };
+    if !live_contribs.iter().all(|&c| c == first_contrib) {
+        return;
+    }
+
+    // Board cards dealt by the all-in street (first run if multi-run)
+    let board_cards: Vec<Card> = match all_in_street {
+        Street::Preflop => Vec::new(),
+        Street::Flop => {
+            let Some(first_board) = hand.boards.iter().min_by_key(|b| b.run_index) else {
+                return;
+            };
+            let Some(flop) = first_board.flop else {
+                return;
+            };
+            flop.to_vec()
+        }
+        Street::Turn => {
+            let Some(first_board) = hand.boards.iter().min_by_key(|b| b.run_index) else {
+                return;
+            };
+            let (Some(flop), Some(turn)) = (first_board.flop, first_board.turn) else {
+                return;
+            };
+            let mut b = flop.to_vec();
+            b.push(turn);
+            b
+        }
+        _ => return,
+    };
+
+    let mut hole_cards_list = Vec::with_capacity(live_players.len());
+    for lp in &live_players {
+        let (Some(c1), Some(c2)) = (lp.hole_cards[0], lp.hole_cards[1]) else {
+            return;
+        };
+        hole_cards_list.push([c1, c2]);
+    }
+
+    let Some(equities) = equity::exact_equity(&hole_cards_list, &board_cards) else {
+        return;
+    };
+    if equities.len() != live_players.len() {
+        return;
+    }
+
+    let deductions_dec = hand
+        .outcome
+        .checked_total_deductions()
+        .unwrap_or(Decimal::ZERO);
+    let pot_after_dec = hand.outcome.total_pot.saturating_sub(deductions_dec);
+    let pot_after_micros = decimal_to_micro_units(pot_after_dec).unwrap_or(0);
+
+    for (lp, &(num, den)) in live_players.iter().zip(&equities) {
+        let Some(&idx) = state.name_to_idx.get(lp.name.as_str()) else {
+            continue;
+        };
+        let Some(s) = stats.get_mut(idx) else {
+            continue;
+        };
+        let Some(res) = results.iter().find(|r| r.player_name == lp.name) else {
+            continue;
+        };
+
+        s.ev_qualified = 1;
+        s.ev_equity_num = num as i64;
+        s.ev_equity_den = den as i64;
+
+        let took_ev_cashout = hand.outcome.adjustments.iter().any(|a| {
+            a.player_name == lp.name
+                && (a.kind == AdjustmentKind::EvCashoutRiskPaid
+                    || a.kind == AdjustmentKind::EvCashoutReceived)
+        });
+
+        if took_ev_cashout {
+            let net_micros = decimal_to_micro_units(res.net).unwrap_or(0);
+            s.ev_net_micros = net_micros;
+        } else {
+            let prod = (num as i128).saturating_mul(pot_after_micros as i128);
+            let ev_won = round_half_even_quotient(prod, den as i128) as i64;
+            let invested_micros = decimal_to_micro_units(res.invested).unwrap_or(0);
+            let adjustments_micros = decimal_to_micro_units(res.adjustments).unwrap_or(0);
+            s.ev_net_micros = ev_won
+                .saturating_sub(invested_micros)
+                .saturating_add(adjustments_micros);
+        }
+    }
 }

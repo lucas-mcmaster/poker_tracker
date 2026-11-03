@@ -4,7 +4,7 @@ History only, never a specification. The current spec and living rules are liste
 
 | Version | Crate | Tests | Summary |
 | :--- | :--- | :--- | :--- |
-| v3.7 (M13) | 0.5.0 | 138 | Derived statistics cache (migration 3), player positions, M13 basic facts/counters, automatic rebuild on open, and CLI --rebuild-stats. |
+| v3.7 | 0.5.0 | 181 | Derived statistics cache (M13–M16): positions, opportunity counters, reports, and exact all-in equity. |
 | v3.6.1 | 0.5.0 | 123 | Audit fixes: refuse six never-observed hand shapes, summary-card and `won`/`collected` checks completed, database identity read as one snapshot (foreign files refused at once), docs synced with code. |
 | v3.6 | 0.5.0 | 121 | Closes four §8 limitations using real GGPoker data: heads-up summary labels, uncontested summary shows, straddles, and EV Cashout receiving side; verified across 10 session exports (989 hands). |
 | v3.5 | 0.5.0 | 104 | Fixes from two reviews of v3.4 and an independent code review: betting replay (short all-ins, raise legality, minimum sizes, incomplete raises, blind sizes, all-in flag), side-pot eligibility, `Dealt to`/order/summary grammar rules, raw text + SHA-256 and `ContentConflict`, quarantine, true micro-units (migration 2), sightings-based undo, database identity, lock handling, stack-continuity warnings, CLI exit codes, extraction tool and lockfile. Details: blueprint §0. |
@@ -13,7 +13,15 @@ History only, never a specification. The current spec and living rules are liste
 | v3.2 | — | 55 | Fixes from the review of v3.1 against the real export: per-milestone file variants, lossless money, multi-run boards, dead blinds, EV Cashout, one-card shows, strict validation. |
 | v3.1 | — | — | The original blueprint (Milestone 2 did not compile). |
 
-## v3.6.1 → v3.7 (in progress)
+## v3.6.1 → v3.7
+
+- **M16 (Exact all-in equity and equity-adjusted results):**
+  - Stats version bumped (`STATS_VERSION = 4`, 76 cache columns) adding `ev_qualified`, `ev_equity_num`, `ev_equity_den`, and `ev_net_micros`.
+  - Bitmask 7-card evaluator in `src/stats/eval.rs` ranking 5–7 cards into 9 hand categories with kickers as a comparable integer, without floats or external dependencies.
+  - Exact equity calculation (`exact_equity`) in `src/stats/equity.rs` enumerating all board completions; reduced integer fractions in lowest terms.
+  - Qualification rules: ≥2 live players at end, all-in on preflop/flop/turn, 2 known hole cards per live player, and equal live contributions (side pots excluded).
+  - Expectation on pot after all deductions (`total_pot − Σ deductions`); EV Cashout recipients retain actual net; half-even rounding of EV net to micro-units.
+  - Results report appends `allin_hands`, `ev_net`, and `ev_bb_per_100`; sessions report joins `hand_player_stats` and appends `ev_net`.
 
 - **M15 (Results, sessions, and reports):**
   - Stats version bumped (`STATS_VERSION = 3`, 72 cache columns) adding `rake_attributed_micros`, `fees_attributed_micros`, `blinds_posted_micros`, and `straddles_posted_micros`.
@@ -39,7 +47,7 @@ History only, never a specification. The current spec and living rules are liste
   - 10-seat positional mapping (`assign_positions`) supporting heads-up through full ring.
   - M13 counters and basic facts: `hands`, `p_walk`, `p_vpip`, `p_pfr_opp`, `p_pfr`, street action counts (`bets`, `raises`, `calls`, `checks`, `folds`), street saw indicators (`f_saw`, `t_saw`, `r_saw`), showdown indicators (`sd_went`, `sd_won`), and win indicators (`won_hand`, `f_saw_won`).
 
-Final M13 test count: 138 tests passing (zero failures).
+Final v3.7 test count: 181 tests passing (zero failures).
 
 ## v3.6 → v3.6.1 (audit fixes)
 

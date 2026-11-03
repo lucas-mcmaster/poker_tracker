@@ -25,8 +25,8 @@ use support::{make_action, make_canonical_hand, make_player};
 
 #[test]
 fn positions_across_table_sizes_and_layouts() {
-    assert_eq!(STATS_VERSION, 3);
-    assert_eq!(COLUMNS.len(), 72);
+    assert_eq!(STATS_VERSION, 4);
+    assert_eq!(COLUMNS.len(), 76);
 
     // 6 players: seats 1..=6, button 1, SB seat 2, BB seat 3
     let p6: Vec<Player> = (1..=6)
@@ -984,6 +984,7 @@ fn worked_examples_from_stats_spec() {
             ("p_folds", 1),
             ("p_rfi_opp", 1),
             ("p_steal_opp", 1),
+            ("ev_equity_den", 1),
         ],
     );
 
@@ -997,6 +998,7 @@ fn worked_examples_from_stats_spec() {
             ("p_folds", 1),
             ("p_rfi_opp", 1),
             ("p_steal_opp", 1),
+            ("ev_equity_den", 1),
         ],
     );
 
@@ -1029,6 +1031,8 @@ fn worked_examples_from_stats_spec() {
             ("rake_attributed_micros", 120_000), // $0.24 / 2
             ("fees_attributed_micros", 50_000),  // $0.10 / 2
             ("blinds_posted_micros", 50_000),    // posted the $0.05 SB
+            ("ev_equity_den", 1),
+            ("ev_net_micros", -2_500_000),
         ],
     );
 
@@ -1056,6 +1060,8 @@ fn worked_examples_from_stats_spec() {
             ("rake_attributed_micros", 120_000), // $0.24 / 2
             ("fees_attributed_micros", 50_000),  // $0.10 / 2
             ("blinds_posted_micros", 100_000),   // posted the $0.10 BB
+            ("ev_equity_den", 1),
+            ("ev_net_micros", 2_160_000),
         ],
     );
 
@@ -1075,6 +1081,8 @@ fn worked_examples_from_stats_spec() {
             ("p_folds", 1),
             ("rake_attributed_micros", 2_151), // floor 2,150 + the leftover micro-unit
             ("blinds_posted_micros", 50_000),  // posted the $0.05 SB
+            ("ev_equity_den", 1),
+            ("ev_net_micros", -50_000),
         ],
     );
 
@@ -1088,6 +1096,8 @@ fn worked_examples_from_stats_spec() {
             ("p_folds", 1),
             ("rake_attributed_micros", 4_301), // floor(40,000 × 0.10 / 0.93)
             ("blinds_posted_micros", 100_000), // posted the $0.10 BB
+            ("ev_equity_den", 1),
+            ("ev_net_micros", -100_000),
         ],
     );
 
@@ -1104,6 +1114,8 @@ fn worked_examples_from_stats_spec() {
             ("f_folds", 1),
             ("rake_attributed_micros", 16_774), // floor(40,000 × 0.39 / 0.93)
             ("straddles_posted_micros", 200_000), // posted the $0.20 straddle
+            ("ev_equity_den", 1),
+            ("ev_net_micros", -390_000),
         ],
     );
 
@@ -1122,16 +1134,34 @@ fn worked_examples_from_stats_spec() {
             ("won_hand", 1),
             ("f_saw_won", 1),
             ("rake_attributed_micros", 16_774), // floor(40,000 × 0.39 / 0.93)
+            ("ev_equity_den", 1),
+            ("ev_net_micros", 500_000),
         ],
     );
 
     let hero2 = &map2["Hero"];
     assert_eq!(hero2.position, Some(1)); // CO
-    assert_exact_non_zero(hero2, &[("hands", 1), ("p_pfr_opp", 1), ("p_folds", 1)]);
+    assert_exact_non_zero(
+        hero2,
+        &[
+            ("hands", 1),
+            ("p_pfr_opp", 1),
+            ("p_folds", 1),
+            ("ev_equity_den", 1),
+        ],
+    );
 
     let btn2 = &map2["4e268376"];
     assert_eq!(btn2.position, Some(0)); // BTN
-    assert_exact_non_zero(btn2, &[("hands", 1), ("p_pfr_opp", 1), ("p_folds", 1)]);
+    assert_exact_non_zero(
+        btn2,
+        &[
+            ("hands", 1),
+            ("p_pfr_opp", 1),
+            ("p_folds", 1),
+            ("ev_equity_den", 1),
+        ],
+    );
 
     // Worked Example 3: HD140650645 (first hand of SAMPLE_SESSION). Money: the SB and BB each
     // invested $0.10, so the $0.01 rake splits 5,000 / 5,000.
@@ -1161,6 +1191,8 @@ fn worked_examples_from_stats_spec() {
             ("sd_went", 1),
             ("rake_attributed_micros", 5_000), // $0.01 / 2
             ("blinds_posted_micros", 100_000), // posted the $0.10 BB
+            ("ev_equity_den", 1),
+            ("ev_net_micros", -100_000),
         ],
     );
 
@@ -1174,6 +1206,7 @@ fn worked_examples_from_stats_spec() {
             ("p_folds", 1),
             ("p_rfi_opp", 1),
             ("p_steal_opp", 1),
+            ("ev_equity_den", 1),
         ],
     );
 
@@ -1200,6 +1233,8 @@ fn worked_examples_from_stats_spec() {
             ("f_saw_won", 1),
             ("rake_attributed_micros", 5_000), // $0.01 / 2
             ("blinds_posted_micros", 50_000),  // posted the $0.05 SB
+            ("ev_equity_den", 1),
+            ("ev_net_micros", 90_000),
         ],
     );
 }

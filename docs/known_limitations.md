@@ -5,8 +5,9 @@ Derived from `docs/BLUEPRINT.md` §8 with updates from the v3.6 specification (`
 
 ---
 
-- **Derived statistics.** The derived cache (M13), opportunity counters (M14), and results,
-  sessions, and reports (M15) are implemented. All-in equity (M16) and filters (M17) remain deferred.
+- **Derived statistics.** The derived cache (M13), opportunity counters (M14), results, sessions,
+  and reports (M15), and exact all-in equity (M16) are implemented. Filters (M17 onward), all-in
+  equity with side pots, and the stats of `docs/stats.md` §8 remain deferred.
 - **Session durations.** Session durations understate the time at the table by about one hand (hand
   histories record start times only). Elapsed times are measured on the timestamps as printed when
   a table's hands do not all state a UTC offset (GGPoker states none), so a session that crosses a
