@@ -25,8 +25,8 @@ use support::{make_action, make_canonical_hand, make_player};
 
 #[test]
 fn positions_across_table_sizes_and_layouts() {
-    assert_eq!(STATS_VERSION, 2);
-    assert_eq!(COLUMNS.len(), 68);
+    assert_eq!(STATS_VERSION, 3);
+    assert_eq!(COLUMNS.len(), 72);
 
     // 6 players: seats 1..=6, button 1, SB seat 2, BB seat 3
     let p6: Vec<Player> = (1..=6)
@@ -951,6 +951,9 @@ fn worked_examples_from_stats_spec() {
     fn assert_exact_non_zero(stats: &PlayerHandStats, expected: &[(&str, i64)]) {
         let expected_map: HashMap<&str, i64> = expected.iter().copied().collect();
         for &col in COLUMNS {
+            if col.ends_with("_micros") {
+                continue;
+            }
             let val = stats.get(col).unwrap();
             if let Some(&exp) = expected_map.get(col) {
                 assert_eq!(
@@ -1168,4 +1171,71 @@ fn worked_examples_from_stats_spec() {
             ("f_saw_won", 1),
         ],
     );
+}
+
+#[test]
+fn attributed_money_parts_sum_exactly_to_hand_deductions_over_corpus() {
+    use poker_tracker::domain::{DeductionKind, decimal_to_micro_units};
+
+    let parser = gg();
+    let mut all_hands = Vec::new();
+
+    let v35_path = std::path::Path::new("tests/fixtures/ggpoker/NLHRed15_2026-08-21.txt");
+    if v35_path.exists() {
+        let content = std::fs::read_to_string(v35_path).unwrap();
+        for (_, res) in parser.parse_session(&content) {
+            all_hands.push(res.unwrap());
+        }
+    }
+
+    let v36_dir = std::path::Path::new("tests/fixtures/ggpoker/v3_6");
+    if v36_dir.exists() {
+        let mut paths: Vec<_> = std::fs::read_dir(v36_dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|ext| ext == "txt"))
+            .collect();
+        paths.sort();
+        for p in paths {
+            let content = std::fs::read_to_string(p).unwrap();
+            for (_, res) in parser.parse_session(&content) {
+                all_hands.push(res.unwrap());
+            }
+        }
+    }
+
+    assert_eq!(all_hands.len(), 1283);
+
+    for hand in &all_hands {
+        let stats = derive_hand_stats(hand);
+
+        let hand_rake_dec = hand
+            .outcome
+            .checked_deductions_of(DeductionKind::Rake)
+            .unwrap_or(Decimal::ZERO);
+        let hand_rake_micros = decimal_to_micro_units(hand_rake_dec).unwrap();
+
+        let hand_fees_dec = hand
+            .outcome
+            .deductions
+            .iter()
+            .filter(|d| d.kind != DeductionKind::Rake)
+            .try_fold(Decimal::ZERO, |acc, d| acc.checked_add(d.amount))
+            .unwrap_or(Decimal::ZERO);
+        let hand_fees_micros = decimal_to_micro_units(hand_fees_dec).unwrap();
+
+        let sum_rake_attr: i64 = stats.iter().map(|s| s.rake_attributed_micros).sum();
+        let sum_fees_attr: i64 = stats.iter().map(|s| s.fees_attributed_micros).sum();
+
+        assert_eq!(
+            sum_rake_attr, hand_rake_micros,
+            "hand {} rake attribution sum mismatch: expected {}, got {}",
+            hand.header.site_hand_id, hand_rake_micros, sum_rake_attr
+        );
+        assert_eq!(
+            sum_fees_attr, hand_fees_micros,
+            "hand {} fees attribution sum mismatch: expected {}, got {}",
+            hand.header.site_hand_id, hand_fees_micros, sum_fees_attr
+        );
+    }
 }

@@ -3,6 +3,7 @@
 //! - Import: `poker_tracker <input-dir> --ggpoker-currency <CODE> [--db <path>]`
 //! - Undo an import run: `poker_tracker --delete-run <RUN-ID> [--db <path>]`
 //! - Rebuild statistics: `poker_tracker --rebuild-stats [--db <path>]`
+//! - Report: `poker_tracker --report <KIND> [--db <path>] [--stakes <LIST>] [--out <path>]`
 //!
 //! Each supported site is enabled by its own option (given at most once). Sites whose exports
 //! do not state the account currency (GGPoker) take it as the option value, in any letter case.
@@ -12,12 +13,14 @@
 //! input directory), `3` import completed but some files or hands were rejected.
 
 use std::env;
+use std::io::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
 
 use poker_tracker::domain::CurrencyCode;
 use poker_tracker::parser::{GgPokerParser, ParserRegistry};
 use poker_tracker::pipeline::{DirectoryIngester, IngestionReport, PipelineError};
+use poker_tracker::report::{ReportKind, ReportOptions, Stakes, write_report};
 use poker_tracker::storage::SqliteRepository;
 use uuid::Uuid;
 
@@ -26,7 +29,11 @@ Usage:
   poker_tracker <input-dir> [site options] [--db <path>]   Import hand histories
   poker_tracker --delete-run <RUN-ID> [--db <path>]        Undo one import run
   poker_tracker --rebuild-stats [--db <path>]              Rebuild statistics cache
+  poker_tracker --report <KIND> [--db <path>] [--stakes <LIST>] [--out <PATH>]
+                                                           Generate a CSV report
   poker_tracker --help                                     Show this help
+
+Report kinds: results, positions, sessions, stats
 
 Site options (enable at least one when importing; each at most once):
   --ggpoker-currency <CODE>   Parse GGPoker exports; amounts are in CODE (e.g. CAD, USD).
@@ -37,6 +44,9 @@ Other options:
   --delete-run <RUN-ID>       Undo an import (the Batch Run ID printed by that import). Hands
                               that another import also contained are kept.
   --rebuild-stats             Rebuild the derived statistics cache for all hands
+  --report <KIND>             Report kind: results, positions, sessions, or stats
+  --stakes <LIST>             Comma-separated list of stakes to include (e.g. 0.05/0.1,0.1/0.2)
+  --out <PATH>                Output file (default: stdout)
 
 Exit codes: 0 success, 1 fatal error, 2 usage error, 3 some files or hands were rejected.";
 
@@ -47,6 +57,11 @@ enum Command {
     },
     DeleteRun(Uuid),
     RebuildStats,
+    Report {
+        kind: ReportKind,
+        stakes: Option<Vec<Stakes>>,
+        out_path: Option<String>,
+    },
 }
 
 struct CliArgs {
@@ -78,6 +93,9 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
     let mut registry = ParserRegistry::new();
     let mut delete_run = None;
     let mut rebuild_stats = false;
+    let mut report_kind = None;
+    let mut stakes = None;
+    let mut out_path = None;
     let mut seen: Vec<String> = Vec::new();
     let mut args = args;
     while let Some(arg) = args.next() {
@@ -103,11 +121,67 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
                 seen.push("--rebuild-stats".to_string());
                 rebuild_stats = true;
             }
+            "--report" => {
+                let raw = take_value(&mut args, "--report", &mut seen)?;
+                let kind = raw.parse::<ReportKind>().map_err(|e| e.to_string())?;
+                report_kind = Some(kind);
+            }
+            "--stakes" => {
+                let raw = take_value(&mut args, "--stakes", &mut seen)?;
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    return Err("malformed --stakes: empty list".to_string());
+                }
+                let raw_items: Vec<&str> = trimmed.split(',').collect();
+                if raw_items.is_empty() || raw_items.iter().any(|item| item.trim().is_empty()) {
+                    return Err("malformed --stakes list".to_string());
+                }
+                let mut parsed_stakes = Vec::new();
+                for item in raw_items {
+                    let s = item.trim().parse::<Stakes>().map_err(|e| e.to_string())?;
+                    parsed_stakes.push(s);
+                }
+                stakes = Some(parsed_stakes);
+            }
+            "--out" => {
+                let path = take_value(&mut args, "--out", &mut seen)?;
+                out_path = Some(path);
+            }
             "-h" | "--help" => return Ok(Parsed::Help),
             flag if flag.starts_with("--") => return Err(format!("unknown option '{flag}'")),
             _ if input_dir.is_none() => input_dir = Some(arg),
             _ => return Err(format!("unexpected argument '{arg}'")),
         }
+    }
+
+    if let Some(kind) = report_kind {
+        if rebuild_stats {
+            return Err("--report cannot be combined with --rebuild-stats".to_string());
+        }
+        if delete_run.is_some() {
+            return Err("--report cannot be combined with --delete-run".to_string());
+        }
+        if input_dir.is_some() {
+            return Err("--report cannot be combined with an import".to_string());
+        }
+        if !registry.is_empty() {
+            return Err("--report cannot be combined with site options".to_string());
+        }
+        return Ok(Parsed::Run(CliArgs {
+            db_path,
+            command: Command::Report {
+                kind,
+                stakes,
+                out_path,
+            },
+        }));
+    }
+
+    if stakes.is_some() {
+        return Err("--stakes requires --report".to_string());
+    }
+    if out_path.is_some() {
+        return Err("--out requires --report".to_string());
     }
 
     let command = match (rebuild_stats, delete_run, input_dir) {
@@ -259,6 +333,55 @@ fn import(db_path: &str, input_dir: &str, registry: &ParserRegistry) -> ExitCode
     }
 }
 
+fn run_report(
+    db_path: &str,
+    kind: ReportKind,
+    stakes: Option<Vec<Stakes>>,
+    out_path: Option<String>,
+) -> ExitCode {
+    let repo = match SqliteRepository::open_existing(db_path) {
+        Ok(r) => r,
+        Err(err) => {
+            eprintln!("Failed to open SQLite database at '{db_path}': {err}");
+            return ExitCode::from(1);
+        }
+    };
+    if let Some(rebuild) = repo.rebuilt_on_open()
+        && rebuild.hands > 0
+    {
+        eprintln!(
+            "Statistics cache rebuilt for {} hand(s) (stats version {})",
+            rebuild.hands, rebuild.version
+        );
+    }
+
+    let options = ReportOptions { stakes };
+    let mut buf = Vec::new();
+    let outcome = match write_report(&repo, kind, &options, &mut buf) {
+        Ok(o) => o,
+        Err(err) => {
+            eprintln!("Report failed: {err}");
+            return ExitCode::from(1);
+        }
+    };
+
+    for s in &outcome.unmatched_stakes {
+        eprintln!("No hands at stakes {s}");
+    }
+
+    if let Some(path) = out_path {
+        if let Err(err) = std::fs::write(&path, &buf) {
+            eprintln!("Failed to write report to '{path}': {err}");
+            return ExitCode::from(1);
+        }
+    } else if let Err(err) = std::io::stdout().write_all(&buf) {
+        eprintln!("Failed to write report to stdout: {err}");
+        return ExitCode::from(1);
+    }
+
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
     let args = match parse_args(env::args().skip(1)) {
         Ok(Parsed::Run(a)) => a,
@@ -279,5 +402,10 @@ fn main() -> ExitCode {
             registry,
         } => import(&args.db_path, input_dir, registry),
         Command::RebuildStats => rebuild_stats(&args.db_path),
+        Command::Report {
+            kind,
+            stakes,
+            out_path,
+        } => run_report(&args.db_path, *kind, stakes.clone(), out_path.clone()),
     }
 }

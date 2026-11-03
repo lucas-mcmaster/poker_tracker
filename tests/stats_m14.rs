@@ -16,7 +16,7 @@ use support::{make_action, make_canonical_hand, make_player};
 #[test]
 fn player_hand_stats_get_covers_all_columns() {
     let s = PlayerHandStats::new("Hero".to_string(), Some(0));
-    assert_eq!(COLUMNS.len(), 68);
+    assert_eq!(COLUMNS.len(), 72);
     for &col in COLUMNS {
         assert!(
             s.get(col).is_some(),

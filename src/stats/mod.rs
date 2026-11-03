@@ -3,6 +3,7 @@
 //! Pure, site-neutral functions that compute player positions and counters from a
 //! [`CanonicalHand`].
 
+pub mod money;
 mod postflop;
 mod preflop;
 
@@ -13,7 +14,7 @@ use rust_decimal::Decimal;
 use crate::domain::canonical::{ActionType, CanonicalHand};
 
 /// Current version of the derived statistics cache schema and definitions.
-pub const STATS_VERSION: i64 = 2;
+pub const STATS_VERSION: i64 = 3;
 
 macro_rules! define_stats_columns {
     ($( $col:ident ),* $(,)?) => {
@@ -141,6 +142,12 @@ define_stats_columns! {
     r_calls,
     r_checks,
     r_folds,
+
+    // Money (stats.md §6.1)
+    rake_attributed_micros,
+    fees_attributed_micros,
+    blinds_posted_micros,
+    straddles_posted_micros,
 }
 
 pub(crate) struct ReplayState<'a> {
@@ -368,6 +375,14 @@ pub fn derive_hand_stats(hand: &CanonicalHand) -> Vec<PlayerHandStats> {
                 }
             }
         }
+    }
+
+    let money_stats = money::compute_hand_money(hand);
+    for (s, m) in stats.iter_mut().zip(money_stats) {
+        s.rake_attributed_micros = m.rake_attributed_micros;
+        s.fees_attributed_micros = m.fees_attributed_micros;
+        s.blinds_posted_micros = m.blinds_posted_micros;
+        s.straddles_posted_micros = m.straddles_posted_micros;
     }
 
     stats

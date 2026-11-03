@@ -15,6 +15,14 @@ History only, never a specification. The current spec and living rules are liste
 
 ## v3.6.1 → v3.7 (in progress)
 
+- **M15 (Results, sessions, and reports):**
+  - Schema version bumped (`STATS_VERSION = 3`, 72 cache columns) adding `rake_attributed_micros`, `fees_attributed_micros`, `blinds_posted_micros`, and `straddles_posted_micros`.
+  - Largest-remainder attribution for rake and other deductions using 128-bit integer arithmetic with lower-seat tie breaking; exact conservation verified over the corpus.
+  - Report engine in `src/report/` generating four CSV reports (`results`, `positions`, `sessions`, `stats`) in a single read transaction protected by derived cache version guard.
+  - Half-even midpoint rounding to 2 decimals for percentages, factors, and bb amounts; exact lossless decimal formatting for money columns.
+  - Table sessions formed by platform, table name, and currency with 30-minute inactivity boundary; UTC-offset/DST awareness for timestamps with stated offsets.
+  - CLI flags `--report`, `--stakes`, and `--out` in `poker_tracker`; pure CSV output on stdout, status and missing stakes notes on stderr; non-destructive execution (never creates a database file).
+
 - **M14 (Opportunity counters):**
   - Schema version bumped (`STATS_VERSION = 2`, 68 cache columns).
   - Preflop opportunity and action counters: `p_rfi_opp`/`p_rfi`, `p_3bet_opp`/`p_3bet`, `p_3bet_faced`/`_fold`/`_call`, `p_4bet_opp`/`p_4bet`, `p_4bet_faced`/`_fold`/`_call`, `p_cc_opp`/`p_cc`, `p_steal_opp`/`p_steal`, `p_sb_steal_faced`/`_fold`/`_raise`, `p_bb_steal_faced`/`_fold`/`_raise`.

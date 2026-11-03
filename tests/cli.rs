@@ -165,3 +165,109 @@ fn rebuild_stats_cli_paths_and_errors() {
     );
     assert!(out.contains(&expected_msg), "stdout was: {out}");
 }
+
+#[test]
+fn report_cli_paths_options_and_errors() {
+    let cwd = TempDir::new().unwrap();
+
+    // 1. --report on a missing database exits 1 and creates no file
+    let (code, _, err) = run(
+        cwd.path(),
+        &["--report", "results", "--db", "missing.sqlite"],
+    );
+    assert_eq!(code, 1);
+    assert!(
+        err.contains("no database exists") || err.contains("Failed to open SQLite database"),
+        "stderr: {err}"
+    );
+    assert!(!cwd.path().join("missing.sqlite").exists());
+
+    // 2. Unknown report kind exits 2
+    let (code, _, err) = run(cwd.path(), &["--report", "unknown_kind"]);
+    assert_eq!(code, 2, "must exit 2 on unknown report kind: {err}");
+    assert!(err.contains("unknown report kind"), "stderr: {err}");
+
+    // 3. Combined usage errors (exit 2)
+    let exports = cwd.path().join("exports");
+    fs::create_dir(&exports).unwrap();
+    fs::write(exports.join("s.txt"), SAMPLE_SESSION).unwrap();
+
+    let (code, _, err) = run(
+        cwd.path(),
+        &[
+            "exports",
+            "--ggpoker-currency",
+            "CAD",
+            "--report",
+            "results",
+        ],
+    );
+    assert_eq!(code, 2, "import + report must exit 2: {err}");
+
+    let (code, _, err) = run(
+        cwd.path(),
+        &[
+            "--delete-run",
+            "0194bf00-0000-7000-8000-000000000000",
+            "--report",
+            "results",
+        ],
+    );
+    assert_eq!(code, 2, "delete-run + report must exit 2: {err}");
+
+    let (code, _, err) = run(cwd.path(), &["--rebuild-stats", "--report", "results"]);
+    assert_eq!(code, 2, "rebuild-stats + report must exit 2: {err}");
+
+    // 4. --stakes or --out without --report exits 2
+    let (code, _, err) = run(cwd.path(), &["--stakes", "0.05/0.1"]);
+    assert_eq!(code, 2, "--stakes without --report must exit 2: {err}");
+
+    let (code, _, err) = run(cwd.path(), &["--out", "report.csv"]);
+    assert_eq!(code, 2, "--out without --report must exit 2: {err}");
+
+    // 5. Malformed stakes exit 2
+    for bad in ["", "0.05", "0.05/", "a/b", "0/0.1", "0.0000001/0.1"] {
+        let (code, _, _) = run(cwd.path(), &["--report", "results", "--stakes", bad]);
+        assert_eq!(code, 2, "malformed stakes '{bad}' must exit 2");
+    }
+
+    // 6. Import session to test valid reports
+    let (code, _, _) = run(cwd.path(), &["exports", "--ggpoker-currency", "CAD"]);
+    assert_eq!(code, 0);
+
+    // 7. stdout carries CSV only
+    let (code, out, err) = run(cwd.path(), &["--report", "results"]);
+    assert_eq!(code, 0, "stderr: {err}");
+    assert!(out.starts_with("currency,stakes,hands,net,"));
+    assert!(err.is_empty(), "expected empty stderr, got: {err}");
+
+    // 8. --out writes to file, stdout is empty
+    let out_file = cwd.path().join("results.csv");
+    let (code, out, err) = run(
+        cwd.path(),
+        &["--report", "results", "--out", out_file.to_str().unwrap()],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert!(out.is_empty(), "stdout must be empty with --out");
+    assert!(out_file.exists());
+    let file_content = fs::read_to_string(&out_file).unwrap();
+    assert!(file_content.starts_with("currency,stakes,hands,net,"));
+
+    // 9. Unmatched stakes prints to stderr, exits 0
+    let (code, out, err) = run(cwd.path(), &["--report", "results", "--stakes", "1/2"]);
+    assert_eq!(code, 0);
+    assert!(err.contains("No hands at stakes 1/2"), "stderr was: {err}");
+    assert_eq!(out.lines().count(), 1);
+
+    // 10. Empty database prints header only
+    let empty_db = cwd.path().join("empty.sqlite");
+    {
+        let _ = poker_tracker::storage::SqliteRepository::open(&empty_db).unwrap();
+    }
+    let (code, out, err) = run(
+        cwd.path(),
+        &["--report", "results", "--db", empty_db.to_str().unwrap()],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(out.lines().count(), 1);
+}
