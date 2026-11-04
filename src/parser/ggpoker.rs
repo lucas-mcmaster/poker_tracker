@@ -118,7 +118,7 @@ static RE_RAISE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static RE_SHOWS: LazyLock<Regex> = LazyLock::new(|| {
-    compile_static_regex(r"^(?P<name>.+?): shows \[(?P<cards>[^\]]+)\](?: \([^()]*\))?$")
+    compile_static_regex(r"^(?P<name>.+?): shows \[(?P<cards>[^\]]+)\](?: \([^()]+\))?$")
 });
 
 static RE_UNCALLED: LazyLock<Regex> = LazyLock::new(|| {
@@ -1205,8 +1205,8 @@ impl HandState {
         // Runouts.
         let multi = self.boards.iter().any(|b| b.run_index > 0);
 
-        // In a multi-run hand, self.winners.len() is always >= 2 (at least one winner per runout),
-        // so `multi` is logically subsumed, but kept explicit for clarity of intent.
+        // A multi-run hand that passes validation has a winner on every runout, so it has two or
+        // more winner entries; `multi` also refuses one that would fail validation later.
         if !self.cashouts.is_empty() && (self.winners.len() > 1 || multi) {
             return Err(ParseError::UnsupportedAdjustment {
                 line: last_line_idx,

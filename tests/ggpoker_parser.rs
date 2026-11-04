@@ -1951,3 +1951,150 @@ fn leniencies_card_casing_and_shows_and_repeat_position_labels() {
         other => panic!("expected UnrecognizedLine, got: {other:?}"),
     }
 }
+
+/// Applies `from` → `to` to `raw`, asserting the text occurs exactly once.
+fn replaced(raw: &str, from: &str, to: &str) -> String {
+    assert_eq!(
+        raw.matches(from).count(),
+        1,
+        "{from:?} must occur exactly once"
+    );
+    raw.replace(from, to)
+}
+
+#[test]
+fn m16_2_review_refusals_pin_each_rule() {
+    // M16.2.1: two decimals, but 30 significant digits; `Decimal::from_str` would round it to
+    // ...678.9, `from_str_exact` refuses it with the text as printed.
+    let long = replaced(
+        HU_SHOWDOWN,
+        "Hero ($13.8 in chips)",
+        "Hero ($1234567890123456789012345678.91 in chips)",
+    );
+    assert_eq!(
+        parse_err(&long),
+        ParseError::InvalidAmount {
+            raw: "1234567890123456789012345678.91".into()
+        }
+    );
+
+    // M16.2.2: the button is seated but posts no small blind.
+    let no_small_blind = replaced(
+        &replaced(
+            &replaced(HU_SHOWDOWN, "445e6868: posts small blind $0.05\n", ""),
+            "445e6868: calls $0.05",
+            "445e6868: calls $0.1",
+        ),
+        "445e6868 (small blind) showed",
+        "445e6868 showed",
+    );
+    match parse_err(&no_small_blind) {
+        ParseError::SummaryMismatch { detail, .. } => {
+            assert_eq!(
+                detail,
+                "heads-up button must be seated and post the small blind"
+            );
+        }
+        other => panic!("expected SummaryMismatch, got: {other:?}"),
+    }
+
+    // M16.2.3: a player chooses a cashout at most once (here again on the turn, line 29).
+    let second_cashout = replaced(
+        EV_CASHOUT_FLOP,
+        "*** TURN *** [Kc Jd 4s] [3c]\n",
+        "*** TURN *** [Kc Jd 4s] [3c]\n62688fe9: Chooses to EV Cashout\n",
+    );
+    match parse_err(&second_cashout) {
+        ParseError::UnsupportedAdjustment { line, content } => {
+            assert_eq!(
+                (line, content.as_str()),
+                (29, "62688fe9: Chooses to EV Cashout")
+            );
+        }
+        other => panic!("expected UnsupportedAdjustment, got: {other:?}"),
+    }
+
+    // M16.2.4: all-in on the turn, so the second run may not deal its own turn.
+    let second_turn = replaced(
+        &replaced(
+            RIT_TWICE_TURN,
+            "*** SECOND RIVER *** [9h Kc 6d Js] [Kh]",
+            "*** SECOND TURN *** [9h Kc 6d] [5c]\n*** SECOND RIVER *** [9h Kc 6d 5c] [Kh]",
+        ),
+        "SECOND Board [Kh]",
+        "SECOND Board [5c Kh]",
+    );
+    match parse_err(&second_turn) {
+        ParseError::IncompleteStreet { attempted, .. } => {
+            assert_eq!(attempted, "*** SECOND TURN *** [9h Kc 6d] [5c]");
+        }
+        other => panic!("expected IncompleteStreet, got: {other:?}"),
+    }
+
+    // M16.2.6: each position label may appear once on a seat line; a shown hand's description
+    // is not empty.
+    for (raw, from, to) in [
+        (
+            HU_SHOWDOWN,
+            "445e6868 (small blind) showed",
+            "445e6868 (small blind) (small blind) showed",
+        ),
+        (
+            RIT_TWICE_TURN,
+            "Seat 3: 53be55c0 (button) showed",
+            "Seat 3: 53be55c0 (button) (button) showed",
+        ),
+        (
+            HU_SHOWDOWN,
+            "445e6868: shows [4c Tc] (a pair of Fours)",
+            "445e6868: shows [4c Tc] ()",
+        ),
+    ] {
+        match parse_err(&replaced(raw, from, to)) {
+            ParseError::UnrecognizedLine { content, .. } => {
+                assert_eq!(content, to_line(raw, from, to))
+            }
+            other => panic!("expected UnrecognizedLine for {to:?}, got: {other:?}"),
+        }
+    }
+}
+
+/// The whole line of `raw` that contains `from`, after the replacement.
+fn to_line(raw: &str, from: &str, to: &str) -> String {
+    let line = raw.lines().find(|l| l.contains(from)).unwrap();
+    line.replace(from, to)
+}
+
+#[test]
+fn runouts_deal_every_street_after_the_betting_anew() {
+    // All-in on the flop: run 2 has no turn of its own, so it repeats run 1's turn (Kd).
+    let repeated_turn = replaced(
+        &replaced(
+            RIT_TWICE_FLOP_REAL,
+            "*** SECOND TURN *** [4s 3c As] [Ac]\n*** SECOND RIVER *** [4s 3c As Ac] [Qd]",
+            "*** SECOND RIVER *** [4s 3c As Kd] [Qd]",
+        ),
+        "SECOND Board [Ac Qd]",
+        "SECOND Board [Qd]",
+    );
+    assert_eq!(
+        parse_err(&repeated_turn),
+        ParseError::DuplicateCard { card: "Kd".into() }
+    );
+
+    // All-in preflop: run 2 has no flop of its own, so it repeats run 1's flop (Jc 5h Kc).
+    let repeated_flop = replaced(
+        &replaced(
+            RIT_THREE_TIMES_PREFLOP,
+            "*** SECOND FLOP *** [6s 3c 8h]\n*** SECOND TURN *** [6s 3c 8h] [9s]\n\
+             *** SECOND RIVER *** [6s 3c 8h 9s] [Js]",
+            "*** SECOND TURN *** [Jc 5h Kc] [9s]\n*** SECOND RIVER *** [Jc 5h Kc 9s] [Js]",
+        ),
+        "SECOND Board [6s 3c 8h 9s Js]",
+        "SECOND Board [9s Js]",
+    );
+    assert_eq!(
+        parse_err(&repeated_flop),
+        ParseError::DuplicateCard { card: "Jc".into() }
+    );
+}

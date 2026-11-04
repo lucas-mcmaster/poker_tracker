@@ -45,6 +45,8 @@ pub enum ParseError {
     #[error("conflicting hole cards for player '{player_name}'")]
     ConflictingHoleCards { player_name: String },
 
+    /// `line` is 1-based; `0` means no line (`validate_hand` found the board incomplete in a
+    /// canonical hand, which has no lines).
     #[error("invalid street transition at line {line}: cannot move from {current} to {attempted}")]
     IncompleteStreet {
         line: usize,
@@ -646,6 +648,15 @@ fn validate_side_pots(hand: &CanonicalHand, results: &[PlayerResult]) -> Result<
 fn validate_boards(hand: &CanonicalHand, hole_cards_mask: u64) -> Result<usize, ParseError> {
     let multi = hand.boards.iter().any(|b| b.run_index > 0);
     let run_count = hand.run_count();
+    // In a multi-run hand, every runout shares the streets up to the last action that is not
+    // `UncalledBetReturned`; every later street is dealt anew in each runout.
+    let last_betting_street = hand
+        .actions
+        .iter()
+        .filter(|a| a.action_type != ActionType::UncalledBetReturned)
+        .map(|a| a.street)
+        .max()
+        .unwrap_or(Street::Preflop);
     if multi {
         let contiguous = hand
             .boards
@@ -664,13 +675,6 @@ fn validate_boards(hand: &CanonicalHand, hole_cards_mask: u64) -> Result<usize, 
                 "every multi-run board must be dealt to the river",
             ));
         }
-        let last_betting_street = hand
-            .actions
-            .iter()
-            .filter(|a| a.action_type != ActionType::UncalledBetReturned)
-            .map(|a| a.street)
-            .max()
-            .unwrap_or(Street::Preflop);
         let first = &hand.boards[0];
         for board in &hand.boards[1..] {
             if last_betting_street >= Street::Flop && board.flop != first.flop {
@@ -706,7 +710,6 @@ fn validate_boards(hand: &CanonicalHand, hole_cards_mask: u64) -> Result<usize, 
     }
 
     let mut global_dealt_mask = hole_cards_mask;
-    let first_board = hand.boards.first();
     for (board_idx, board) in hand.boards.iter().enumerate() {
         if (board.turn.is_some() && board.flop.is_none())
             || (board.river.is_some() && board.turn.is_none())
@@ -724,14 +727,12 @@ fn validate_boards(hand: &CanonicalHand, hole_cards_mask: u64) -> Result<usize, 
             check_and_insert_card(&mut single_board_mask, card)?;
         }
 
-        // Across runouts, only cards that are not shared with the first runout are new.
-        let (shares_flop, shares_turn) = match first_board {
-            Some(first) if board_idx > 0 => {
-                let f = board.flop == first.flop;
-                (f, f && board.turn == first.turn)
-            }
-            _ => (false, false),
-        };
+        // Across runouts, a later runout's flop and turn are counted once only when the betting
+        // reached that street (they then equal the first runout's, checked above). A street
+        // dealt after the betting ended is dealt anew in each runout, so its cards are new.
+        let later_runout = board_idx > 0;
+        let shares_flop = later_runout && last_betting_street >= Street::Flop;
+        let shares_turn = later_runout && last_betting_street >= Street::Turn;
         if !shares_flop && let Some(flop) = board.flop {
             for card in flop {
                 check_and_insert_card(&mut global_dealt_mask, card)?;
@@ -1654,7 +1655,7 @@ mod tests {
             CommunityCards {
                 run_index: 2,
                 flop: Some([c("2c"), c("7d"), c("9h")]),
-                turn: Some(c("3s")),
+                turn: Some(c("Jh")),
                 river: Some(c("5d")),
             },
         ];
@@ -2066,6 +2067,117 @@ mod tests {
             },
         ];
         assert_violation(&h, "runout 2 does not share turn with first runout");
+    }
+
+    fn board(run_index: u8, cards: [&str; 5]) -> CommunityCards {
+        let [f1, f2, f3, t, r] = cards;
+        CommunityCards {
+            run_index,
+            flop: Some([c(f1), c(f2), c(f3)]),
+            turn: Some(c(t)),
+            river: Some(c(r)),
+        }
+    }
+
+    /// A and Hero (stacks 0.30) get all-in on `street` (A bets 0.20 there, or raises to 0.30
+    /// preflop), C folds preflop; the hand is run twice, with run 1 `2c 7d 9h 3s 4c` and
+    /// `run_2`. A wins run 1, Hero run 2. Valid when run 2 shares exactly the streets bet on.
+    fn run_twice(street: Street, run_2: [&str; 5]) -> CanonicalHand {
+        use ActionType::*;
+        let all_in = |seq, street, name: &str, t, amount, total| StreetAction {
+            is_all_in: true,
+            ..act(seq, street, name, t, amount, total)
+        };
+        let mut h = valid_hand();
+        h.players[0].starting_stack = dec!(0.30);
+        h.players[1].starting_stack = dec!(0.30);
+        h.actions = vec![
+            act(
+                0,
+                Street::Preflop,
+                "A",
+                PostSmallBlind,
+                dec!(0.05),
+                dec!(0.05),
+            ),
+            act(
+                1,
+                Street::Preflop,
+                "Hero",
+                PostBigBlind,
+                dec!(0.10),
+                dec!(0.10),
+            ),
+            act(2, Street::Preflop, "C", Fold, dec!(0), dec!(0)),
+        ];
+        if street == Street::Preflop {
+            h.actions.extend([
+                all_in(3, Street::Preflop, "A", Raise, dec!(0.25), dec!(0.30)),
+                all_in(4, Street::Preflop, "Hero", Call, dec!(0.20), dec!(0.30)),
+            ]);
+        } else {
+            h.actions.extend([
+                act(3, Street::Preflop, "A", Call, dec!(0.05), dec!(0.10)),
+                act(4, Street::Preflop, "Hero", Check, dec!(0), dec!(0.10)),
+            ]);
+            for s in [Street::Flop, Street::Turn, Street::River] {
+                let seq = u16::try_from(h.actions.len()).unwrap();
+                if s == street {
+                    h.actions.extend([
+                        all_in(seq, s, "A", Bet, dec!(0.20), dec!(0.20)),
+                        all_in(seq + 1, s, "Hero", Call, dec!(0.20), dec!(0.20)),
+                    ]);
+                    break;
+                }
+                h.actions.extend([
+                    act(seq, s, "A", Check, dec!(0), dec!(0)),
+                    act(seq + 1, s, "Hero", Check, dec!(0), dec!(0)),
+                ]);
+            }
+        }
+        h.boards = vec![board(1, ["2c", "7d", "9h", "3s", "4c"]), board(2, run_2)];
+        h.outcome.total_pot = dec!(0.60);
+        h.outcome.uncalled_returned = dec!(0);
+        h.outcome.deductions[0].amount = dec!(0.01);
+        h.outcome.winners = vec![
+            PotWinner {
+                player_name: "A".into(),
+                amount: dec!(0.29),
+                run_index: 1,
+            },
+            PotWinner {
+                player_name: "Hero".into(),
+                amount: dec!(0.30),
+                run_index: 2,
+            },
+        ];
+        h
+    }
+
+    #[test]
+    fn runouts_share_exactly_the_streets_bet_on() {
+        // Valid: run 2 shares the streets bet on and deals the rest anew.
+        validate_hand(&run_twice(Street::Preflop, ["5h", "6h", "8s", "Jh", "5d"])).unwrap();
+        validate_hand(&run_twice(Street::Flop, ["2c", "7d", "9h", "Jh", "5d"])).unwrap();
+        validate_hand(&run_twice(Street::Turn, ["2c", "7d", "9h", "3s", "5d"])).unwrap();
+        // A street bet on that run 2 does not share.
+        assert_violation(
+            &run_twice(Street::Flop, ["5h", "6h", "8s", "Jh", "5d"]),
+            "runout 2 does not share flop with first runout",
+        );
+        assert_violation(
+            &run_twice(Street::River, ["2c", "7d", "9h", "3s", "5d"]),
+            "runout 2 does not share river with first runout",
+        );
+        // A street dealt after the betting ended that run 2 repeats: its cards were dealt twice.
+        assert_eq!(
+            validate_hand(&run_twice(Street::Preflop, ["2c", "7d", "9h", "Jh", "5d"])),
+            Err(ParseError::DuplicateCard { card: "2c".into() })
+        );
+        assert_eq!(
+            validate_hand(&run_twice(Street::Flop, ["2c", "7d", "9h", "3s", "5d"])),
+            Err(ParseError::DuplicateCard { card: "3s".into() })
+        );
     }
 
     fn renumber(h: &mut CanonicalHand) {

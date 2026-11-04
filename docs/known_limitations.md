@@ -48,6 +48,8 @@ Derived from `docs/BLUEPRINT.md` §8 with updates from the v3.6 specification (`
   - heads-up hands with a missed or dead blind, or where the button does not post the small
     blind;
   - `mucks hand`, seat-change and sit-out lines;
+  - an EV Cashout chosen before the flop (the site-neutral core accepts one), and amounts with
+    more than two decimals;
   - non-`$` stakes;
   - Omaha and other limits.
 - **Timestamps** from GGPoker carry no time zone (`utc_offset_seconds = None`), so ordering

@@ -94,11 +94,11 @@ storage re-validates before inserting. No invariant is ever weakened or skipped.
 
 ### Boards
 
-- Turn requires a flop; river requires a turn. `validate_boards` reports `IncompleteStreet { line: 0 }` where line `0` documents "no line".
+- Turn requires a flop; river requires a turn (otherwise `IncompleteStreet`, with `line: 0`, meaning no line).
 - Multi-run boards are runs `1..=n` with `2 ≤ n ≤ MAX_RUNOUTS` (3), each dealt to the river.
 - In a multi-run hand, every runout has the first runout's cards on each street up to and including the street of the last action that is not `UncalledBetReturned`.
 - No card appears twice among the hole cards and any single runout.
-- No card is dealt twice across runouts; cards shared with the first runout are counted once.
+- No card is dealt twice across runouts: the cards every runout shares (the streets bet on, above) are counted once, and every street dealt after the betting ended is dealt anew in each runout, so its cards are new.
 
 ---
 
@@ -106,6 +106,7 @@ storage re-validates before inserting. No invariant is ever weakened or skipped.
 
 Site-specific text format rules observed in real exports:
 
+- **Amounts and cards, on every line:** an amount is exact and has at most two decimals (it is never rounded); a card token has the observed case (ranks `23456789TJQKA`, suits `cdhs`).
 - **Seat lines:** come first, in ascending seat order.
 - **Blinds and straddles:**
   - Small blind is the first blind posted.
@@ -115,9 +116,7 @@ Site-specific text format rules observed in real exports:
 - **Hole cards:**
   - Exactly one `Dealt to` line per seated player, in seat order, directly after `*** HOLE CARDS ***`.
   - Only Hero's line carries cards (`Dealt to Hero [c1 c2]`); opponent lines are printed with a trailing space (`Dealt to <name> `); the parser does not depend on it.
-  - Card tokens require observed casing (ranks `23456789TJQKA`, suits `cdhs`).
 - **Action lines:**
-  - Amounts are exact and have at most two decimal places; `from_str_exact` is used.
   - Check, call, bet, raise, straddle legality; `raises $x to $y` requires `facing + x = y`.
   - Straddle lines use the observed syntax `<name>: straddle $x`.
   - EV Cashout:
@@ -125,7 +124,7 @@ Site-specific text format rules observed in real exports:
     - Settled on the river by `<name>: Pays Cashout Risk ($x)` (winner) or `<name>: Receives Cashout ($x)` (loser).
     - Single-run hands with exactly one payout line only. A cashout in a multi-run hand, or in any hand with two or more `collected` lines (a split pot, but also one player collecting a main and a side pot), is quarantined as `UnsupportedAdjustment`.
   - Multi-run headers: `*** SECOND/THIRD FLOP/TURN ***` headers are accepted only when no action took place on that street.
-  - Shows lines: body `shows` lines allow one parenthesised description without nested parentheses and nothing after it.
+  - Shows lines: body `shows` lines allow one non-empty parenthesised description without nested parentheses and nothing after it.
 - **Showdown headers:** come in run order (`*** FIRST/SECOND/THIRD SHOWDOWN ***`).
 - **Summary section:**
   - Per-seat winnings and cashout settlements: body `Pays Cashout Risk ($x)` ⇔ summary `, Cashout Risk ($x)`; body `Receives Cashout ($x)` ⇔ summary `, EV Cashout ($x)`, with equal amounts.

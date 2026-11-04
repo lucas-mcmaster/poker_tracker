@@ -4,7 +4,7 @@ History only, never a specification. The current spec and living rules are liste
 
 | Version | Crate | Tests | Summary |
 | :--- | :--- | :--- | :--- |
-| v3.7.1 | 0.5.0 | 238 | Audit fixes: exact bb_won aggregation, fail-closed fallbacks, robust CLI, parser strictness (exact amounts, heads-up button/blind, EV cashout street restriction, multi-run shared cards, leniencies tightened). |
+| v3.7.1 | 0.5.0 | 242 (241 on Windows) | Audit fixes: exact bb_won aggregation, fail-closed fallbacks, robust CLI, parser strictness (exact amounts, heads-up button/blind, EV cashout street restriction, multi-run shared cards, leniencies tightened). |
 | v3.7 | 0.5.0 | 182 | Derived statistics cache (M13–M16): positions, opportunity counters, reports, and exact all-in equity. |
 | v3.6.1 | 0.5.0 | 123 | Audit fixes: refuse six never-observed hand shapes, summary-card and `won`/`collected` checks completed, database identity read as one snapshot (foreign files refused at once), docs synced with code. |
 | v3.6 | 0.5.0 | 121 | Closes four §8 limitations using real GGPoker data: heads-up summary labels, uncontested summary shows, straddles, and EV Cashout receiving side; verified across 10 session exports (989 hands). |
@@ -32,6 +32,7 @@ History only, never a specification. The current spec and living rules are liste
 - **M16.2.5 (Validator detail assertions and near-miss verification):** `assert_violation` asserts error detail substrings; near-miss tests verified for nine validator rules.
 - **M16.2.6 (Leniencies tightened):** card tokens require observed case (`23456789TJQKA` / `cdhs`); `shows` regex restricted to single parenthesised description; duplicate summary position labels rejected; opponent `Dealt to` trailing space documented as not enforced.
 - **M16.2.7 (Exhaustive matching and domain documentation):** `validate_betting` matches exhaustively on `BettingLimit` and `GameType`; domain doc comments reworded site-neutrally; living invariants updated.
+- **M16.2 review:** a street dealt after the betting ended is dealt anew in each runout, so a runout that repeats it is refused as `DuplicateCard` (before, a runout equal to the first on such a street counted as shared); a body `shows` description may not be empty. New tests pin `from_str_exact`, the `SECOND TURN` header rule, the flop and river branches of the shared-streets rule, and repeated `(button)` and `(small blind)` labels. M16.2 also gave the second hero of `rejects_zero_or_multiple_heroes` hole cards, so that the rule the test names fires (an edit the spec did not list).
 
 ## v3.6.1 → v3.7
 
