@@ -12,11 +12,20 @@ Derived from `docs/BLUEPRINT.md` §8 with updates from the v3.6 specification (`
   histories record start times only). Elapsed times are measured on the timestamps as printed when
   a table's hands do not all state a UTC offset (GGPoker states none), so a session that crosses a
   daylight-saving change is off by an hour there.
-- An open that starts while another process rebuilds the statistics cache waits up to 5 s and
-  then fails with a lock error; run it again;
+- An open that starts while another process rebuilds the statistics cache, or commits an import
+  batch (every open, `--report` included, takes the write lock briefly to check migrations),
+  waits up to 5 s and then fails with a lock error; run it again.
 - A stored hand that cannot be loaded makes the cache rebuild, and therefore every open by a
   v3.7 build, fail with an error naming the hand, until the row is repaired outside
   `poker_tracker`.
+- **Rebuild time.** Exact all-in equity enumerates every runout, so it dominates deriving the
+  cache: a heads-up preflop all-in takes well under 0.1 s in a release build, and the 1,284-hand
+  corpus rebuilds in under 1 s. A full rebuild grows with the number of preflop all-ins (about
+  10 minutes for a million hands at the corpus's rate) and holds the write lock meanwhile.
+- **Sessions across time bases.** Sessions are listed by their printed `start`, also when one
+  table is timed in UTC and another as printed (`docs/stats.md` §6.1), so such a listing can be
+  out of real-time order. GGPoker states no UTC offset, so it cannot happen with its exports.
+- **`--out`** replaces an existing file without asking.
 - **Currency conversion** (e.g. CAD and USD results combined) is a reporting concern. Storage
   never mixes currencies.
 - **Game variants.** The model is Hold'em: two hole-card slots, NL cash. Omaha, other limits and

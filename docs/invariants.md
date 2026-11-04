@@ -144,7 +144,7 @@ Site-specific text format rules observed in real exports:
 
 ## 3. Derived data (`src/stats/`, `src/report/`, `hand_player_stats`)
 
-Rules for the derived statistics cache (v3.7, M13–M15) and the reports built on it (M15).
+Rules for the derived statistics cache (v3.7, M13–M16) and the reports built on it (M15–M16).
 Definitions of every position, counter, money column and session are in `docs/stats.md`; the
 lifecycle contract is `docs/SPEC_v3.7.md` §2 and the report contract §6.
 

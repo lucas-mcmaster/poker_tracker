@@ -8,7 +8,9 @@ identically for any site.
 
 **This file is authoritative.** Code (`src/stats/`) and the independent oracle
 (`tools/oracles/v3_7_oracle.py`) implement it. If they disagree with this file, they have a bug.
-A change to any definition here bumps `STATS_VERSION` (§1.3) in the same commit.
+A change to the definition of a stored column (§1.3) bumps `STATS_VERSION` in the same commit;
+figures computed at report time (the §5 ratios, `bb_won`, `bb/100`, sessions) do not
+(`AGENTS.md` §3.10).
 
 ---
 
@@ -29,12 +31,14 @@ A change to any definition here bumps `STATS_VERSION` (§1.3) in the same commit
 
 - No floating point anywhere (`AGENTS.md` invariant 1). Counters are integers; money is integer
   micro-units; equities are exact fractions of integers.
-- Ratios are computed with `rust_decimal::Decimal` from integer sums, never in SQL. Counters and
-  money are read only from `INTEGER` columns (`SUM(...)` of integers; never a `REAL`). Text
-  columns (currency, table, timestamp) are read as text.
+- Ratios are computed in Rust from integer sums, never in SQL: with `rust_decimal::Decimal`
+  when one integer is divided by another, and as exact integer fractions when quotients are
+  added (`bb_won`, §6.1). Counters and money are read only from `INTEGER` columns (`SUM(...)` of
+  integers; never a `REAL`). Text columns (currency, table, timestamp) are read as text.
 - **Display rounding** (reports only, never stored): percent stats, `bb/100`, `$/100`, `bb_won`
   and aggregation factors are rounded **half-even to 2 decimals** and always printed with 2
-  decimals (`53.125 → 53.12`, `-208.1 → -208.10`). Exact money amounts are printed exactly with
+  decimals (`53.125 → 53.12`, `-208.1 → -208.10`); a value that rounds to zero prints `0.00`.
+  Each figure is rounded once, from its exact value. Exact money amounts are printed exactly with
   trailing zeros removed (`-25.79`, `14.23115`, `-1`).
 
 ### 1.3 The derived cache
@@ -239,8 +243,8 @@ only within one currency.
 | Column / figure | Definition |
 | --- | --- |
 | Amount Won (`net`) | `hand_players.net_micros` (`won − invested + adjustments`), unchanged. |
-| `bb_won` | `net / big_blind` of the same hand, summed over hands: compute `Σ net / big_blind` per big-blind value with `Decimal`, then add the groups. Big blinds, as PT4 uses for No-Limit (**not** PT3's "big bets" = 2 big blinds). |
-| `bb/100` | `Σ bb_won / hands × 100`. |
+| `bb_won` | `net / big_blind` of the same hand, summed over hands: sum the net per big-blind value, divide once per value, and add the quotients as an **exact fraction** of integers (micro-units); round once for display. (Adding rounded `Decimal` quotients can move an exact half-even midpoint: −29.99 at a 3.00 big blind plus 23.59 at 6.00 is exactly −6.065, which is −6.06, not −6.07.) Big blinds, as PT4 uses for No-Limit (**not** PT3's "big bets" = 2 big blinds). |
+| `bb/100` | `Σ bb_won / hands × 100`, from the exact `bb_won`. |
 | `$/100` (`net_per_100`) | `Σ net / hands × 100`. |
 | `blinds_posted_micros` | Sum of the player's `PostSmallBlind`, `PostBigBlind` and `PostDeadBlind` amounts (PT3 Amount Blind). |
 | `straddles_posted_micros` | Sum of the player's `PostStraddle` amounts. |
@@ -312,7 +316,7 @@ it carries no all-in luck. Their opponents are adjusted normally.
 
 **Report figures:** `ev_net` = `Σ ev_net_micros`; `ev_bb_per_100` is `bb/100` computed from
 `ev_net_micros` instead of `net_micros` (§6.1: summed per big-blind value, divided once per
-value, then added); `allin_hands` = number of player-hands with `ev_qualified = 1`.
+value, then added exactly); `allin_hands` = number of player-hands with `ev_qualified = 1`.
 
 ---
 

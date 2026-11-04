@@ -7,8 +7,9 @@ other instruction disagree, stop and ask the user.
 
 ## 1. Sources of truth (in priority order)
 
-1. **The current spec, `docs/SPEC_v3.7.md`** (milestones M13–M16): tasks, contracts and expected
-   numbers for the work in progress.
+1. **The current spec, `docs/SPEC_v3.7.md`** (milestones M13–M16), **amended by
+   `docs/SPEC_v3.7.1.md`** (M16.1–M16.2, fixes from the v3.7 review; for its items it is the
+   contract): tasks, contracts and expected numbers for the work in progress.
 2. **`docs/stats.md`**: the definition of every derived statistic, position and money figure.
    For definitions it outranks the spec and the code.
 3. **`docs/invariants.md`** and **`docs/known_limitations.md`**: the living rules and scope.
@@ -140,6 +141,7 @@ poker_tracker/
 ├── .editorconfig  .gitattributes    # keep fixtures and the blueprint verbatim
 ├── docs/
 │   ├── SPEC_v3.7.md                 # current spec (M13–M16)
+│   ├── SPEC_v3.7.1.md               # amendment from the v3.7 review (M16.1–M16.2)
 │   ├── stats.md                     # statistic definitions (authoritative)
 │   ├── invariants.md                # living invariants
 │   ├── known_limitations.md         # living limitations
