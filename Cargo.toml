@@ -39,3 +39,8 @@ todo = "warn"
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+[profile.dev]
+# SPEC_v3.7 §10 decision 14: exact all-in equity makes the debug test suite slow at opt-level 0.
+# Debug assertions and overflow checks stay on.
+opt-level = 1
