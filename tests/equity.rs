@@ -1295,3 +1295,130 @@ fn exact_equity_four_way_preflop() {
         ]
     );
 }
+
+#[test]
+fn risk_paid_ev_cashout_players_keep_their_net() {
+    use poker_tracker::domain::{AdjustmentKind, decimal_to_micro_units};
+
+    // docs/stats.md §6.2: a player who took EV Cashout keeps their actual net; their opponent is
+    // adjusted. Three of the four real cashout hands are risk-paid (`EvCashoutRiskPaid`).
+    let parser = gg();
+    for (fixture, cashing, opponent) in [
+        (EV_CASHOUT_CALLER, "c7bdd1e4", "28501331"),
+        (EV_CASHOUT_FLOP, "62688fe9", "dc7d0eb4"),
+        (EV_CASHOUT, "1020a9fa", "79b6d419"),
+    ] {
+        let h = parser.parse_hand(fixture).unwrap();
+        let id = h.header.site_hand_id.clone();
+        assert!(
+            h.outcome
+                .adjustments
+                .iter()
+                .any(|a| a.player_name == cashing && a.kind == AdjustmentKind::EvCashoutRiskPaid),
+            "{id}: {cashing} pays cashout risk"
+        );
+        let results = h.checked_player_results().unwrap();
+        let net = |name: &str| {
+            let r = results.iter().find(|r| r.player_name == name).unwrap();
+            decimal_to_micro_units(r.net).unwrap()
+        };
+        let stats = derive_hand_stats(&h);
+        let row = |name: &str| stats.iter().find(|s| s.player_name == name).unwrap();
+        assert_eq!(row(cashing).ev_qualified, 1, "{id}");
+        assert_eq!(
+            row(cashing).ev_net_micros,
+            net(cashing),
+            "{id}: cashing player keeps net"
+        );
+        assert_eq!(row(opponent).ev_qualified, 1, "{id}");
+        assert_ne!(
+            row(opponent).ev_net_micros,
+            net(opponent),
+            "{id}: opponent is adjusted"
+        );
+    }
+}
+
+#[test]
+fn exact_equity_on_boards_of_one_two_and_five_cards() {
+    // SPEC_v3.7 §2: exact_equity enumerates every completion of any board of up to five cards.
+    // The stats layer passes 0, 3 or 4 cards, so these sizes are tested only here. Values from
+    // eval7 (independent of the crate).
+    let hands = |list: &[(&str, &str)]| -> Vec<[Card; 2]> {
+        list.iter().map(|&(a, b)| [card(a), card(b)]).collect()
+    };
+    let board = |cards: &[&str]| -> Vec<Card> { cards.iter().map(|c| card(c)).collect() };
+    let aa_kk = hands(&[("Ah", "As"), ("Kh", "Ks")]);
+    assert_eq!(
+        exact_equity(&aa_kk, &board(&["2c"])).unwrap(),
+        [(304_499, 356_730), (52_231, 356_730)]
+    );
+    assert_eq!(
+        exact_equity(&aa_kk, &board(&["2c", "7d"])).unwrap(),
+        [(6_707, 7_590), (883, 7_590)]
+    );
+    // A complete board has one completion: the river decides, and a tie splits.
+    let river = board(&["2c", "7d", "9h", "Kd", "3s"]);
+    assert_eq!(exact_equity(&aa_kk, &river).unwrap(), [(0, 1), (1, 1)]);
+    let ak_ak = hands(&[("Ah", "Kd"), ("Ac", "Kh")]);
+    let dry = board(&["2c", "7d", "9h", "Ts", "3s"]);
+    assert_eq!(exact_equity(&ak_ak, &dry).unwrap(), [(1, 2), (1, 2)]);
+}
+
+#[test]
+fn exact_equity_matches_eval7_on_2130_fixed_spots() {
+    // tests/fixtures/equity/eval7_spots.txt (tools/oracles/equity_spots.py): 1,000 random and
+    // 1,000 tie-provoking river spots with 2-6 players, 100 turn and 30 flop spots, each with
+    // its exact equities from eval7. The evaluator unit tests of §7.1 pin categories and a few
+    // kickers; this pins every comparison these spots exercise (high-card kickers included).
+    let text = fs::read_to_string("tests/fixtures/equity/eval7_spots.txt").unwrap();
+    let mut checked = 0;
+    for (n, line) in text.lines().enumerate() {
+        let mut parts = line.split(';');
+        let (holes, board, expected) = (
+            parts.next().unwrap(),
+            parts.next().unwrap(),
+            parts.next().unwrap(),
+        );
+        let holes: Vec<[Card; 2]> = holes
+            .split('|')
+            .map(|h| {
+                let (a, b) = h.split_once(' ').unwrap();
+                [card(a), card(b)]
+            })
+            .collect();
+        let board: Vec<Card> = board
+            .split(' ')
+            .filter(|c| !c.is_empty())
+            .map(card)
+            .collect();
+        let expected: Vec<(u64, u64)> = expected
+            .split(' ')
+            .map(|f| {
+                let (num, den) = f.split_once('/').unwrap();
+                (num.parse().unwrap(), den.parse().unwrap())
+            })
+            .collect();
+        assert_eq!(
+            exact_equity(&holes, &board).unwrap(),
+            expected,
+            "spot {} ({line})",
+            n + 1
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 2130);
+}
+
+#[test]
+fn evaluate_takes_five_to_seven_cards_only() {
+    // `stats::eval::evaluate` documents `0` for fewer than 5 or more than 7 cards.
+    use poker_tracker::stats::eval::evaluate;
+    let cards: Vec<Card> = ["As", "Ks", "Qs", "Js", "Ts", "9s", "8s", "7s"]
+        .iter()
+        .map(|c| card(c))
+        .collect();
+    assert_eq!(evaluate(&cards[..4]), 0);
+    assert_eq!(evaluate(&cards[..8]), 0);
+    assert!(evaluate(&cards[..5]) > 0 && evaluate(&cards[..7]) > 0);
+}

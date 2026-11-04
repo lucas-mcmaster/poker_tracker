@@ -16,7 +16,7 @@ use tempfile::NamedTempFile;
 
 use common::gg;
 use poker_tracker::domain::{
-    ActionType, CanonicalHand, Card, CurrencyCode, PotWinner, Rank, Street, Suit,
+    ActionType, CanonicalHand, Card, CommunityCards, CurrencyCode, PotWinner, Rank, Street, Suit,
 };
 use poker_tracker::parser::HandParser;
 use poker_tracker::report::{ReportError, ReportKind, ReportOptions, Stakes, write_report};
@@ -545,4 +545,176 @@ fn sessions_fail_closed_on_an_unreadable_timestamp() {
         "expected CorruptRow naming the timestamp, got {err:?}"
     );
     assert!(buf.is_empty(), "a corrupt row must write nothing");
+}
+
+/// Heads-up turn all-in at 0.05/0.10 that Hero loses: Hero (button, SB) holds Ah Ad, Villain
+/// Kh Kd, board 2c 7d 9h Ks, river 3s. On the turn only Ac and As win for Hero, so Hero's
+/// equity is 2/44 = 1/22 of the 20.00 pot (no deductions).
+fn hero_turn_all_in_with_one_out_in_22(id: &str) -> CanonicalHand {
+    let card = |s: &str| Card::from_str(s).unwrap();
+    let mut p = vec![
+        make_player(1, "Hero", dec!(10), true),
+        make_player(2, "Villain", dec!(10), false),
+    ];
+    p[0].hole_cards = [Some(card("Ah")), Some(card("Ad"))];
+    p[1].hole_cards = [Some(card("Kh")), Some(card("Kd"))];
+    let act = |seq, street, who, kind, amount, total, all_in| {
+        make_action(seq, street, who, kind, amount, total, all_in)
+    };
+    let a = vec![
+        act(
+            0,
+            Street::Preflop,
+            "Hero",
+            ActionType::PostSmallBlind,
+            dec!(0.05),
+            dec!(0.05),
+            false,
+        ),
+        act(
+            1,
+            Street::Preflop,
+            "Villain",
+            ActionType::PostBigBlind,
+            dec!(0.10),
+            dec!(0.10),
+            false,
+        ),
+        act(
+            2,
+            Street::Preflop,
+            "Hero",
+            ActionType::Call,
+            dec!(0.05),
+            dec!(0.10),
+            false,
+        ),
+        act(
+            3,
+            Street::Preflop,
+            "Villain",
+            ActionType::Check,
+            dec!(0),
+            dec!(0.10),
+            false,
+        ),
+        act(
+            4,
+            Street::Flop,
+            "Villain",
+            ActionType::Check,
+            dec!(0),
+            dec!(0),
+            false,
+        ),
+        act(
+            5,
+            Street::Flop,
+            "Hero",
+            ActionType::Check,
+            dec!(0),
+            dec!(0),
+            false,
+        ),
+        act(
+            6,
+            Street::Turn,
+            "Villain",
+            ActionType::Bet,
+            dec!(9.90),
+            dec!(9.90),
+            true,
+        ),
+        act(
+            7,
+            Street::Turn,
+            "Hero",
+            ActionType::Call,
+            dec!(9.90),
+            dec!(9.90),
+            true,
+        ),
+    ];
+    let board = CommunityCards {
+        run_index: 0,
+        flop: Some([card("2c"), card("7d"), card("9h")]),
+        turn: Some(card("Ks")),
+        river: Some(card("3s")),
+    };
+    let mut h = make_canonical_hand(1, p, a, vec![board], vec![("Villain", dec!(20.00))]);
+    h.outcome.total_pot = dec!(20.00);
+    h.header.site_hand_id = id.to_string();
+    h
+}
+
+/// Three stakes in one currency, every hand by Hero from the SB at one table and one time:
+/// - `M1` at 0.05/0.1, the turn all-in above: net -10, equity 1/22, so `ev_net` =
+///   round(20.00 / 22) - 10 = 0.909091 - 10 = -9.090909;
+/// - `M2` at 0.1/0.2 and `M3` at 0.05/0.25, `hero_sb_folds`: nets -0.1 and -0.05.
+///
+/// Ordered by big blind the rows are 0.05/0.1, 0.1/0.2, 0.05/0.25 (by small blind first they
+/// would be 0.05/0.1, 0.05/0.25, 0.1/0.2). `bb_won` per big blind: -100, -0.5, -0.2, total
+/// -100.70; `ev_bb_won`: -90.90909, -0.5, -0.2, total -91.60909.
+#[test]
+fn multi_stakes_rows_combine_per_big_blind_and_m16_columns() {
+    let m1 = hero_turn_all_in_with_one_out_in_22("M1");
+    let m2 = hero_sb_folds("M2", dec!(0.10), dec!(0.20));
+    let m3 = hero_sb_folds("M3", dec!(0.05), dec!(0.25));
+    let temp_db = NamedTempFile::new().unwrap();
+    let mut repo = SqliteRepository::open(temp_db.path()).unwrap();
+    let stored = repo.insert_hands_batch(&[m1, m2, m3]).unwrap();
+    assert!(stored.rejected.is_empty(), "{:?}", stored.rejected);
+
+    assert_eq!(
+        report_text(&repo, ReportKind::Results, &ReportOptions::default()),
+        "currency,stakes,hands,net,net_per_100,bb_won,bb_per_100,rake,fees,blinds,straddles,allin_hands,ev_net,ev_bb_per_100\n\
+         CAD,0.05/0.1,1,-10,-1000.00,-100.00,-10000.00,0,0,0.05,0,1,-9.090909,-9090.91\n\
+         CAD,0.1/0.2,1,-0.1,-10.00,-0.50,-50.00,0,0,0.1,0,0,-0.1,-50.00\n\
+         CAD,0.05/0.25,1,-0.05,-5.00,-0.20,-20.00,0,0,0.05,0,0,-0.05,-20.00\n\
+         CAD,ALL,3,-10.15,-338.33,-100.70,-3356.67,0,0,0.2,0,1,-9.240909,-3053.64\n"
+    );
+    // One SB row across three big blinds: bb/100 = -100.70 / 3 × 100
+    assert_eq!(
+        report_text(&repo, ReportKind::Positions, &ReportOptions::default()),
+        "currency,position,hands,net,bb_per_100,vpip,pfr,rfi\n\
+         CAD,SB,3,-10.15,-3356.67,33.33,0.00,0.00\n"
+    );
+    // One session across three big blinds (same table, same start)
+    assert_eq!(
+        report_text(&repo, ReportKind::Sessions, &ReportOptions::default()),
+        "currency,platform,table,start,end,duration_seconds,hands,net,bb_per_100,ev_net\n\
+         CAD,GGPoker,TestTable,2026-08-21T17:00:00,2026-08-21T17:00:00,0,3,-10.15,-3356.67,-9.240909\n"
+    );
+}
+
+#[test]
+fn stakes_allow_exactly_six_decimal_places() {
+    // Six decimal places, on either side, are accepted (SPEC_v3.7 M15.3)
+    for six in ["0.000001/0.1", "0.05/0.100000"] {
+        assert!(
+            Stakes::from_str(six).is_ok(),
+            "expected '{six}' to be accepted"
+        );
+    }
+    // Seven are rejected even when the extra digit is a trailing zero that micro-units could hold
+    for seven in ["0.0500000/0.1", "0.05/0.1000000"] {
+        assert!(
+            Stakes::from_str(seven).is_err(),
+            "expected '{seven}' to be rejected"
+        );
+    }
+}
+
+#[test]
+fn report_kinds_parse_from_their_cli_names() {
+    // The CLI tests run only `--report results`; every kind must parse to its own variant.
+    for (name, kind) in [
+        ("results", ReportKind::Results),
+        ("positions", ReportKind::Positions),
+        ("sessions", ReportKind::Sessions),
+        ("stats", ReportKind::Stats),
+    ] {
+        assert_eq!(ReportKind::from_str(name), Ok(kind), "{name}");
+    }
+    assert!(ReportKind::from_str("summary").is_err());
 }

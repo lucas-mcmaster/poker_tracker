@@ -1305,3 +1305,210 @@ fn attributed_money_parts_sum_exactly_to_hand_deductions_over_corpus() {
         );
     }
 }
+
+#[test]
+fn position_labels_switch_between_six_and_seven_seats() {
+    // docs/stats.md §2: with max_seats <= 6, code 2 is MP and codes 3-7 are EP; with
+    // max_seats >= 7, codes 2-4 are MP and 5-7 are EP. The blinds, BTN and CO never change.
+    for max_seats in 2..=10u8 {
+        let expected_3_and_4 = if max_seats <= 6 { "EP" } else { "MP" };
+        let labels: Vec<&str> = (0..=9)
+            .map(|code| position_label(code, max_seats))
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "BTN",
+                "CO",
+                "MP",
+                expected_3_and_4,
+                expected_3_and_4,
+                "EP",
+                "EP",
+                "EP",
+                "BB",
+                "SB"
+            ],
+            "max_seats {max_seats}"
+        );
+    }
+}
+
+#[test]
+fn jackpot_and_other_deductions_are_split_once_as_one_sum() {
+    use poker_tracker::domain::{DeductionKind, PotDeduction};
+
+    // Three players invest 0.10 each; the hand has a Jackpot of 1 micro-unit and an Other
+    // deduction of 1 micro-unit (docs/stats.md §6.1: one split of their sum). Splitting the sum
+    // T = 2 by equal weights gives floor(2/3) = 0 each and two leftover micro-units, which go to
+    // the two lowest seats: [1, 1, 0]. Two separate splits would give [2, 0, 0].
+    let p: Vec<Player> = (1..=3)
+        .map(|s| make_player(s, &format!("P{s}"), dec!(10), s == 1))
+        .collect();
+    let a = vec![
+        make_action(
+            0,
+            Street::Preflop,
+            "P2",
+            ActionType::PostSmallBlind,
+            dec!(0.05),
+            dec!(0.05),
+            false,
+        ),
+        make_action(
+            1,
+            Street::Preflop,
+            "P3",
+            ActionType::PostBigBlind,
+            dec!(0.10),
+            dec!(0.10),
+            false,
+        ),
+        make_action(
+            2,
+            Street::Preflop,
+            "P1",
+            ActionType::Call,
+            dec!(0.10),
+            dec!(0.10),
+            false,
+        ),
+        make_action(
+            3,
+            Street::Preflop,
+            "P2",
+            ActionType::Call,
+            dec!(0.05),
+            dec!(0.10),
+            false,
+        ),
+        make_action(
+            4,
+            Street::Preflop,
+            "P3",
+            ActionType::Check,
+            dec!(0),
+            dec!(0.10),
+            false,
+        ),
+    ];
+    let mut h = make_canonical_hand(1, p, a, vec![], vec![("P1", dec!(0.299998))]);
+    h.outcome.total_pot = dec!(0.30);
+    h.outcome.deductions = vec![
+        PotDeduction {
+            kind: DeductionKind::Jackpot,
+            label: "Jackpot".to_string(),
+            amount: dec!(0.000001),
+        },
+        PotDeduction {
+            kind: DeductionKind::Other,
+            label: "Other".to_string(),
+            amount: dec!(0.000001),
+        },
+    ];
+    let stats = derive_hand_stats(&h);
+    let fees: Vec<i64> = stats.iter().map(|s| s.fees_attributed_micros).collect();
+    let rake: Vec<i64> = stats.iter().map(|s| s.rake_attributed_micros).collect();
+    assert_eq!(fees, [1, 1, 0]);
+    assert_eq!(rake, [0, 0, 0]);
+}
+
+#[test]
+fn a_hand_with_two_small_blind_posts_has_no_positions() {
+    // docs/invariants.md §3 Positions: positions need exactly one small blind; otherwise every
+    // player gets NULL. Seat 2 (left of the button) posts the small blind and seat 3 the big
+    // blind, so the layout check alone would pass; seat 4 posts a second small blind.
+    let p: Vec<Player> = (1..=4)
+        .map(|s| make_player(s, &format!("P{s}"), dec!(10), s == 1))
+        .collect();
+    let post = |seq, who, kind, amount| {
+        make_action(seq, Street::Preflop, who, kind, amount, amount, false)
+    };
+    let a = vec![
+        post(0, "P2", ActionType::PostSmallBlind, dec!(0.05)),
+        post(1, "P3", ActionType::PostBigBlind, dec!(0.10)),
+        post(2, "P4", ActionType::PostSmallBlind, dec!(0.05)),
+        make_action(
+            3,
+            Street::Preflop,
+            "P4",
+            ActionType::Fold,
+            dec!(0),
+            dec!(0.05),
+            false,
+        ),
+        make_action(
+            4,
+            Street::Preflop,
+            "P1",
+            ActionType::Fold,
+            dec!(0),
+            dec!(0),
+            false,
+        ),
+        make_action(
+            5,
+            Street::Preflop,
+            "P2",
+            ActionType::Fold,
+            dec!(0),
+            dec!(0.05),
+            false,
+        ),
+    ];
+    let h = make_canonical_hand(1, p, a, vec![], vec![("P3", dec!(0.20))]);
+    assert!(assign_positions(&h).is_empty());
+    assert!(derive_hand_stats(&h).iter().all(|s| s.position.is_none()));
+}
+
+#[test]
+fn an_all_in_big_blind_who_never_acts_is_not_a_walk() {
+    // docs/stats.md §3: a walk needs every other player to fold. Here the big blind's post is
+    // their whole stack, so they never decide, but the small blind calls: not a walk.
+    let p = vec![
+        make_player(1, "Hero", dec!(10), true),
+        make_player(2, "Villain", dec!(0.10), false),
+    ];
+    let a = vec![
+        make_action(
+            0,
+            Street::Preflop,
+            "Hero",
+            ActionType::PostSmallBlind,
+            dec!(0.05),
+            dec!(0.05),
+            false,
+        ),
+        make_action(
+            1,
+            Street::Preflop,
+            "Villain",
+            ActionType::PostBigBlind,
+            dec!(0.10),
+            dec!(0.10),
+            true,
+        ),
+        make_action(
+            2,
+            Street::Preflop,
+            "Hero",
+            ActionType::Call,
+            dec!(0.05),
+            dec!(0.10),
+            false,
+        ),
+    ];
+    let board = CommunityCards {
+        run_index: 0,
+        flop: Some([
+            "2c".parse().unwrap(),
+            "7d".parse().unwrap(),
+            "9h".parse().unwrap(),
+        ]),
+        turn: Some("Ks".parse().unwrap()),
+        river: Some("3s".parse().unwrap()),
+    };
+    let h = make_canonical_hand(1, p, a, vec![board], vec![("Hero", dec!(0.20))]);
+    let stats = derive_hand_stats(&h);
+    assert_eq!(stats.iter().map(|s| s.p_walk).collect::<Vec<_>>(), [0, 0]);
+}

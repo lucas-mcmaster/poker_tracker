@@ -1339,3 +1339,275 @@ fn canonical_check_raise() {
     assert_eq!(s2[1].f_xr_opp, 1);
     assert_eq!(s2[1].f_xr, 0);
 }
+
+/// Heads-up: A (button, SB) opens, B calls; A c-bets the flop and B calls; on the turn B checks,
+/// A bets again (a turn c-bet) and B makes `turn_reply` (chips added, B's turn total after).
+fn turn_cbet_hand(
+    turn_reply: ActionType,
+    amount: rust_decimal::Decimal,
+) -> poker_tracker::domain::CanonicalHand {
+    let p = vec![
+        make_player(1, "A", dec!(10), false),
+        make_player(2, "B", dec!(10), true),
+    ];
+    let act = |seq, street, who, kind, amount, total| {
+        make_action(seq, street, who, kind, amount, total, false)
+    };
+    let mut a = vec![
+        act(
+            0,
+            Street::Preflop,
+            "A",
+            ActionType::PostSmallBlind,
+            dec!(0.05),
+            dec!(0.05),
+        ),
+        act(
+            1,
+            Street::Preflop,
+            "B",
+            ActionType::PostBigBlind,
+            dec!(0.10),
+            dec!(0.10),
+        ),
+        act(
+            2,
+            Street::Preflop,
+            "A",
+            ActionType::Raise,
+            dec!(0.25),
+            dec!(0.30),
+        ),
+        act(
+            3,
+            Street::Preflop,
+            "B",
+            ActionType::Call,
+            dec!(0.20),
+            dec!(0.30),
+        ),
+        act(4, Street::Flop, "B", ActionType::Check, dec!(0), dec!(0)),
+        act(
+            5,
+            Street::Flop,
+            "A",
+            ActionType::Bet,
+            dec!(0.30),
+            dec!(0.30),
+        ),
+        act(
+            6,
+            Street::Flop,
+            "B",
+            ActionType::Call,
+            dec!(0.30),
+            dec!(0.30),
+        ),
+        act(7, Street::Turn, "B", ActionType::Check, dec!(0), dec!(0)),
+        act(
+            8,
+            Street::Turn,
+            "A",
+            ActionType::Bet,
+            dec!(0.60),
+            dec!(0.60),
+        ),
+        act(9, Street::Turn, "B", turn_reply, amount, amount),
+    ];
+    if turn_reply == ActionType::Raise {
+        a.push(act(
+            10,
+            Street::Turn,
+            "A",
+            ActionType::Fold,
+            dec!(0),
+            dec!(0.60),
+        ));
+    }
+    let board = CommunityCards {
+        run_index: 0,
+        flop: Some([
+            "2c".parse().unwrap(),
+            "7d".parse().unwrap(),
+            "9h".parse().unwrap(),
+        ]),
+        turn: Some("Ks".parse().unwrap()),
+        river: None,
+    };
+    make_canonical_hand(1, p, a, vec![board], vec![])
+}
+
+#[test]
+fn turn_cbet_faced_fold_and_raise_are_counted() {
+    // docs/stats.md §4.2: facing a turn c-bet, the reply is counted as fold, call or raise.
+    // Hero's corpus values of t_cbet_fold and t_cbet_raise are 0, so only these hands set them.
+    for (reply, amount, expected) in [
+        (ActionType::Fold, dec!(0), [1, 0, 0]),
+        (ActionType::Call, dec!(0.60), [0, 1, 0]),
+        (ActionType::Raise, dec!(1.80), [0, 0, 1]),
+    ] {
+        let stats = derive_hand_stats(&turn_cbet_hand(reply, amount));
+        let (a, b) = (&stats[0], &stats[1]);
+        assert_eq!((a.t_cbet_opp, a.t_cbet), (1, 1), "{reply:?}");
+        assert_eq!(b.t_cbet_faced, 1, "{reply:?}");
+        assert_eq!(
+            [b.t_cbet_fold, b.t_cbet_call, b.t_cbet_raise],
+            expected,
+            "{reply:?}"
+        );
+    }
+}
+
+#[test]
+fn a_raise_after_the_turn_cbet_removes_turn_cbet_faced() {
+    // docs/stats.md §4.2: t_cbet_faced needs no Raise between the c-bet and the decision (as on
+    // the flop). Three-handed: A (button) c-bets flop and turn, B raises the turn c-bet, C folds.
+    let p = vec![
+        make_player(1, "A", dec!(10), false),
+        make_player(2, "B", dec!(10), false),
+        make_player(3, "C", dec!(10), true),
+    ];
+    let act = |seq, street, who, kind, amount, total| {
+        make_action(seq, street, who, kind, amount, total, false)
+    };
+    let a = vec![
+        act(
+            0,
+            Street::Preflop,
+            "B",
+            ActionType::PostSmallBlind,
+            dec!(0.05),
+            dec!(0.05),
+        ),
+        act(
+            1,
+            Street::Preflop,
+            "C",
+            ActionType::PostBigBlind,
+            dec!(0.10),
+            dec!(0.10),
+        ),
+        act(
+            2,
+            Street::Preflop,
+            "A",
+            ActionType::Raise,
+            dec!(0.30),
+            dec!(0.30),
+        ),
+        act(
+            3,
+            Street::Preflop,
+            "B",
+            ActionType::Call,
+            dec!(0.25),
+            dec!(0.30),
+        ),
+        act(
+            4,
+            Street::Preflop,
+            "C",
+            ActionType::Call,
+            dec!(0.20),
+            dec!(0.30),
+        ),
+        act(5, Street::Flop, "B", ActionType::Check, dec!(0), dec!(0)),
+        act(6, Street::Flop, "C", ActionType::Check, dec!(0), dec!(0)),
+        act(
+            7,
+            Street::Flop,
+            "A",
+            ActionType::Bet,
+            dec!(0.45),
+            dec!(0.45),
+        ),
+        act(
+            8,
+            Street::Flop,
+            "B",
+            ActionType::Call,
+            dec!(0.45),
+            dec!(0.45),
+        ),
+        act(
+            9,
+            Street::Flop,
+            "C",
+            ActionType::Call,
+            dec!(0.45),
+            dec!(0.45),
+        ),
+        act(10, Street::Turn, "B", ActionType::Check, dec!(0), dec!(0)),
+        act(11, Street::Turn, "C", ActionType::Check, dec!(0), dec!(0)),
+        act(
+            12,
+            Street::Turn,
+            "A",
+            ActionType::Bet,
+            dec!(1.00),
+            dec!(1.00),
+        ),
+        act(
+            13,
+            Street::Turn,
+            "B",
+            ActionType::Raise,
+            dec!(3.00),
+            dec!(3.00),
+        ),
+        act(14, Street::Turn, "C", ActionType::Fold, dec!(0), dec!(0)),
+        act(15, Street::Turn, "A", ActionType::Fold, dec!(0), dec!(1.00)),
+    ];
+    let board = CommunityCards {
+        run_index: 0,
+        flop: Some([
+            "2c".parse().unwrap(),
+            "7d".parse().unwrap(),
+            "9h".parse().unwrap(),
+        ]),
+        turn: Some("Ks".parse().unwrap()),
+        river: None,
+    };
+    let stats = derive_hand_stats(&make_canonical_hand(1, p, a, vec![board], vec![]));
+    let (a, b, c) = (&stats[0], &stats[1], &stats[2]);
+    assert_eq!((a.t_cbet_opp, a.t_cbet), (1, 1));
+    assert_eq!((b.t_cbet_faced, b.t_cbet_raise), (1, 1));
+    assert_eq!(
+        (c.t_cbet_faced, c.t_cbet_fold),
+        (0, 0),
+        "B's raise came between"
+    );
+}
+
+#[test]
+fn facing_a_four_bet_a_fold_is_not_a_call() {
+    // docs/stats.md §4.1: p_4bet_call counts a call of the 4-bet; a fold counts in p_4bet_fold
+    // only. Hero's corpus counts cannot tell (10 faced = 5 calls + 5 other replies).
+    for (reply, amount, total, expected) in [
+        (ActionType::Call, dec!(1.80), dec!(2.70), (1, 1, 0)),
+        (ActionType::Fold, dec!(0), dec!(0.90), (1, 0, 1)),
+    ] {
+        let p = vec![
+            make_player(1, "A", dec!(10), false),
+            make_player(2, "B", dec!(10), true),
+        ];
+        let act = |seq, who, kind, amount, total| {
+            make_action(seq, Street::Preflop, who, kind, amount, total, false)
+        };
+        let a = vec![
+            act(0, "A", ActionType::PostSmallBlind, dec!(0.05), dec!(0.05)),
+            act(1, "B", ActionType::PostBigBlind, dec!(0.10), dec!(0.10)),
+            act(2, "A", ActionType::Raise, dec!(0.25), dec!(0.30)),
+            act(3, "B", ActionType::Raise, dec!(0.80), dec!(0.90)),
+            act(4, "A", ActionType::Raise, dec!(2.40), dec!(2.70)),
+            act(5, "B", reply, amount, total),
+        ];
+        let stats = derive_hand_stats(&make_canonical_hand(1, p, a, vec![], vec![]));
+        let b = &stats[1];
+        assert_eq!(
+            (b.p_4bet_faced, b.p_4bet_call, b.p_4bet_fold),
+            expected,
+            "{reply:?}"
+        );
+    }
+}

@@ -271,3 +271,122 @@ fn report_cli_paths_options_and_errors() {
     assert_eq!(code, 0, "stderr: {err}");
     assert_eq!(out.lines().count(), 1);
 }
+
+#[test]
+fn import_into_a_foreign_database_exits_1_and_a_rebuilt_cache_is_announced_on_stderr() {
+    let cwd = TempDir::new().unwrap();
+    let exports = cwd.path().join("exports");
+    fs::create_dir(&exports).unwrap();
+    fs::write(exports.join("s.txt"), SAMPLE_SESSION).unwrap();
+
+    // A database that is not a poker_tracker database cannot be opened: fatal, exit 1 (AGENTS §6)
+    let foreign = cwd.path().join("foreign.sqlite");
+    rusqlite::Connection::open(&foreign)
+        .unwrap()
+        .execute_batch("CREATE TABLE notes (x TEXT);")
+        .unwrap();
+    let (code, out, err) = run(
+        cwd.path(),
+        &[
+            "exports",
+            "--ggpoker-currency",
+            "CAD",
+            "--db",
+            "foreign.sqlite",
+        ],
+    );
+    assert_eq!(code, 1, "{out}{err}");
+    assert!(err.contains("Failed to open SQLite database"), "{err}");
+
+    // SPEC_v3.7 M13.5: a command whose open rebuilt the cache with at least one hand says so on
+    // stderr first; stdout of --report holds only the CSV.
+    let (code, _, err) = run(cwd.path(), &["exports", "--ggpoker-currency", "CAD"]);
+    assert_eq!(code, 0, "{err}");
+    let forget_cache = || {
+        rusqlite::Connection::open(cwd.path().join("poker_tracker.sqlite"))
+            .unwrap()
+            .execute("DELETE FROM derived_cache", [])
+            .unwrap();
+    };
+    forget_cache();
+    let (code, out, err) = run(cwd.path(), &["--report", "results"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        err,
+        "Statistics cache rebuilt for 2 hand(s) (stats version 4)\n"
+    );
+    assert!(out.starts_with("currency,stakes,hands,net,"), "{out}");
+    forget_cache();
+    let (code, _, err) = run(cwd.path(), &["exports", "--ggpoker-currency", "CAD"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.starts_with("Statistics cache rebuilt for 2 hand(s) (stats version 4)\n"),
+        "{err}"
+    );
+}
+
+#[test]
+fn option_combinations_order_and_rebuild_notices() {
+    let cwd = TempDir::new().unwrap();
+    let exports = cwd.path().join("exports");
+    fs::create_dir(&exports).unwrap();
+    fs::write(exports.join("s.txt"), SAMPLE_SESSION).unwrap();
+
+    // --rebuild-stats and --delete-run take no site option (SPEC_v3.7 M13.5; AGENTS §6)
+    for args in [
+        &["--rebuild-stats", "--ggpoker-currency", "CAD"][..],
+        &[
+            "--delete-run",
+            "0194bf00-0000-7000-8000-000000000000",
+            "--ggpoker-currency",
+            "CAD",
+        ],
+        &["--rebuild-stats", "--rebuild-stats"],
+    ] {
+        let (code, _, err) = run(cwd.path(), args);
+        assert_eq!(code, 2, "{args:?}: {err}");
+    }
+    // Option order does not matter: --db before --rebuild-stats is a missing database (exit 1)
+    let (code, _, err) = run(cwd.path(), &["--db", "missing.sqlite", "--rebuild-stats"]);
+    assert_eq!(code, 1, "{err}");
+    // Usage errors say what is wrong
+    let (_, _, err) = run(cwd.path(), &["--bogus"]);
+    assert!(err.contains("unknown option '--bogus'"), "{err}");
+    let (_, _, err) = run(
+        cwd.path(),
+        &["exports", "other", "--ggpoker-currency", "CAD"],
+    );
+    assert!(err.contains("unexpected argument 'other'"), "{err}");
+
+    // A new, empty database prints no rebuild notice (M13.5); nor does a rebuild of no hands.
+    let (code, _, err) = run(cwd.path(), &["exports", "--ggpoker-currency", "CAD"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("Statistics cache rebuilt"), "{err}");
+    let empty = cwd.path().join("empty.sqlite");
+    drop(poker_tracker::storage::SqliteRepository::open(&empty).unwrap());
+    let forget_cache = |db: &Path| {
+        rusqlite::Connection::open(db)
+            .unwrap()
+            .execute("DELETE FROM derived_cache", [])
+            .unwrap();
+    };
+    forget_cache(&empty);
+    let (code, _, err) = run(
+        cwd.path(),
+        &["--report", "results", "--db", empty.to_str().unwrap()],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(err.is_empty(), "{err}");
+
+    // --delete-run announces a rebuild of stored hands like the other commands
+    forget_cache(&cwd.path().join("poker_tracker.sqlite"));
+    let (code, _, err) = run(
+        cwd.path(),
+        &["--delete-run", "0194bf00-0000-7000-8000-000000000000"],
+    );
+    assert_eq!(code, 1, "unknown run");
+    assert!(
+        err.starts_with("Statistics cache rebuilt for 2 hand(s) (stats version 4)\n"),
+        "{err}"
+    );
+}

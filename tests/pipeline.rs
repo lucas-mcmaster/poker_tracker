@@ -312,3 +312,62 @@ fn symlinked_exports_are_followed_and_an_empty_input_is_reported() {
         assert_eq!((report.files_processed, report.hands_ingested), (1, 2));
     }
 }
+
+/// A one-player snapshot for the stack-continuity unit tests below.
+fn snapshot(
+    table: &str,
+    time: &str,
+    line: usize,
+    starting: rust_decimal::Decimal,
+    ending: rust_decimal::Decimal,
+) -> poker_tracker::pipeline::StackSnapshot {
+    poker_tracker::pipeline::StackSnapshot {
+        platform: poker_tracker::domain::Platform::GGPoker,
+        table_name: table.to_string(),
+        timestamp: chrono::NaiveDateTime::parse_from_str(time, "%Y-%m-%d %H:%M:%S").unwrap(),
+        hand_id: format!("{table}-{line}"),
+        block_start_line: line,
+        players: vec![poker_tracker::pipeline::PlayerStacks {
+            name: "P".to_string(),
+            is_hero: false,
+            starting,
+            ending,
+        }],
+    }
+}
+
+#[test]
+fn stack_continuity_compares_only_one_table_and_skips_across_unparsed_blocks() {
+    use poker_tracker::pipeline::check_stack_continuity;
+    use rust_decimal_macros::dec;
+    let path = std::path::Path::new("f.txt");
+
+    // Control: one table, consecutive hands, the stack shrinks from 10 to 5: one warning.
+    let mut one_table = vec![
+        snapshot("A", "2026-08-21 12:00:00", 1, dec!(10), dec!(10)),
+        snapshot("A", "2026-08-21 12:01:00", 40, dec!(5), dec!(5)),
+    ];
+    assert_eq!(check_stack_continuity(path, &mut one_table, &[]).len(), 1);
+
+    // Two tables in one file (another site's export could mix them): never compared.
+    let mut two_tables = vec![
+        snapshot("A", "2026-08-21 12:00:00", 1, dec!(10), dec!(10)),
+        snapshot("B", "2026-08-21 12:01:00", 40, dec!(5), dec!(5)),
+    ];
+    assert!(check_stack_continuity(path, &mut two_tables, &[]).is_empty());
+
+    // Oldest hand first in the file, with a block that did not parse between them: skipped.
+    let mut gap = vec![
+        snapshot("A", "2026-08-21 12:00:00", 1, dec!(10), dec!(10)),
+        snapshot("A", "2026-08-21 12:01:00", 40, dec!(5), dec!(5)),
+    ];
+    assert!(check_stack_continuity(path, &mut gap, &[20]).is_empty());
+}
+
+#[test]
+fn a_storage_failure_is_described_as_such() {
+    assert_eq!(
+        FailureStage::Storage("duplicate content".to_string()).to_string(),
+        "rejected by storage: duplicate content"
+    );
+}

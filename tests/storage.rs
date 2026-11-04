@@ -1019,3 +1019,276 @@ fn rebuild_failure_on_unloadable_hand_fails_closed_and_leaves_database_untouched
         "hand_player_stats was preserved via rollback"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// v3.7 review: batch-level errors, mixed raw text, and the stale-cache import
+// ---------------------------------------------------------------------------------------------
+
+fn counts(repo: &SqliteRepository) -> (i64, i64, i64) {
+    (
+        scalar(repo, "SELECT COUNT(*) FROM hands"),
+        scalar(repo, "SELECT COUNT(*) FROM hand_sightings"),
+        scalar(repo, "SELECT COUNT(*) FROM import_runs"),
+    )
+}
+
+#[test]
+fn a_database_wide_error_after_a_duplicate_stores_nothing_from_the_batch() {
+    // ARCHITECTURE §6: lock, I/O and other database-wide errors return Err and nothing from the
+    // batch is stored. The batch is [a duplicate, a new hand]; the new hand's cache rows fail
+    // with "no such table" (not a constraint error), after the duplicate's sighting and the
+    // batch's run were written in the same transaction.
+    let temp_db = NamedTempFile::new().unwrap();
+    let mut repo = SqliteRepository::open(temp_db.path()).unwrap();
+    let first = Uuid::now_v7();
+    repo.insert_sourced_hands_batch(&[parse(WALK)], &[source(first, "a.txt", 1, WALK)])
+        .unwrap();
+    let before = counts(&repo);
+    assert_eq!(before, (1, 1, 1));
+
+    rusqlite::Connection::open(temp_db.path())
+        .unwrap()
+        .execute_batch("DROP TABLE hand_player_stats;")
+        .unwrap();
+
+    let second = Uuid::now_v7();
+    let result = repo.insert_sourced_hands_batch(
+        &[parse(WALK), parse(EV_CASHOUT)],
+        &[
+            source(second, "b.txt", 1, WALK),
+            source(second, "b.txt", 30, EV_CASHOUT),
+        ],
+    );
+    let err = result.expect_err("a database-wide error must fail the batch");
+    assert!(!err.is_hand_specific(), "{err:?}");
+    assert_eq!(
+        counts(&repo),
+        before,
+        "no hand, sighting or run from the failed batch"
+    );
+}
+
+#[test]
+fn duplicates_with_raw_text_on_one_side_only_are_compared_by_content() {
+    // One side has raw text and the other does not: the stored hand is loaded and compared
+    // (ARCHITECTURE §6), in both directions.
+    let changed = WALK.replace("Dealt to Hero [Ts 6d]", "Dealt to Hero [Ts 7d]");
+    let run = Uuid::now_v7();
+
+    // Stored without raw text, re-imported with it
+    let mut repo = SqliteRepository::open_in_memory().unwrap();
+    repo.insert_hands_batch(&[parse(WALK)]).unwrap();
+    let stats = repo
+        .insert_sourced_hands_batch(&[parse(&changed)], &[source(run, "b.txt", 1, &changed)])
+        .unwrap();
+    assert!(
+        matches!(&stats.rejected[..], [r] if matches!(r.error, StorageError::ContentConflict { .. })),
+        "{stats:?}"
+    );
+
+    // Stored with raw text, re-imported without it
+    let mut repo = SqliteRepository::open_in_memory().unwrap();
+    repo.insert_sourced_hands_batch(&[parse(WALK)], &[source(run, "a.txt", 1, WALK)])
+        .unwrap();
+    let stats = repo.insert_hands_batch(&[parse(&changed)]).unwrap();
+    assert!(
+        matches!(&stats.rejected[..], [r] if matches!(r.error, StorageError::ContentConflict { .. })),
+        "{stats:?}"
+    );
+}
+
+#[test]
+fn a_duplicate_with_raw_text_fills_in_a_hand_stored_without_it() {
+    // ARCHITECTURE §6: a duplicate records a sighting and fills in missing raw text.
+    let mut repo = SqliteRepository::open_in_memory().unwrap();
+    repo.insert_hands_batch(&[parse(WALK)]).unwrap();
+    assert_eq!(
+        scalar(&repo, "SELECT COUNT(*) FROM hands WHERE raw_sha256 IS NULL"),
+        1
+    );
+    let run = Uuid::now_v7();
+    let stats = repo
+        .insert_sourced_hands_batch(&[parse(WALK)], &[source(run, "a.txt", 7, WALK)])
+        .unwrap();
+    assert_eq!(stats.duplicates_skipped, 1);
+    let filled: Vec<(String, String)> = rows(&repo, "SELECT raw_text, raw_sha256 FROM hands");
+    assert_eq!(filled, vec![(WALK.to_string(), hand_text_sha256(WALK))]);
+    assert_eq!(
+        rows::<String, i64>(&repo, "SELECT source_file, source_line FROM hand_sightings"),
+        vec![("a.txt".to_string(), 7)]
+    );
+}
+
+#[test]
+fn a_stale_cache_import_quarantines_nothing_even_with_a_broken_hand() {
+    // SPEC_v3.7 §2 step 5: a stale insert is a batch-level error; nothing is quarantined. The
+    // file has one hand that fails to parse, which a normal import would quarantine.
+    let temp_db = NamedTempFile::new().unwrap();
+    let mut repo = SqliteRepository::open(temp_db.path()).unwrap();
+    rusqlite::Connection::open(temp_db.path())
+        .unwrap()
+        .execute(
+            "UPDATE derived_cache SET version = ?1 WHERE name = 'hand_player_stats'",
+            [STATS_VERSION + 1],
+        )
+        .unwrap();
+    let exports = tempfile::TempDir::new().unwrap();
+    let broken = SAMPLE_SESSION.replace("Dealt to Hero [5h 2s]", "Dealt to Hero [1h 2s]");
+    std::fs::write(exports.path().join("s.txt"), broken).unwrap();
+    let mut reg = ParserRegistry::new();
+    reg.register(GgPokerParser::new(CurrencyCode::CAD));
+    let result = DirectoryIngester::default().ingest_directory(exports.path(), &reg, &mut repo);
+    assert!(
+        matches!(result, Err(PipelineError::Storage { .. })),
+        "{result:?}"
+    );
+    assert_eq!(scalar(&repo, "SELECT COUNT(*) FROM quarantined_hands"), 0);
+    assert_eq!(scalar(&repo, "SELECT COUNT(*) FROM hands"), 0);
+}
+
+#[test]
+fn a_constraint_error_rejects_only_that_hand() {
+    // ARCHITECTURE §6: conflict and constraint errors reject that hand; the rest of the batch is
+    // stored. A trigger added by another connection makes SQLite refuse one hand with a
+    // constraint error (RAISE(ABORT) is SQLITE_CONSTRAINT_TRIGGER).
+    let temp_db = NamedTempFile::new().unwrap();
+    let mut repo = SqliteRepository::open(temp_db.path()).unwrap();
+    rusqlite::Connection::open(temp_db.path())
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER refuse_walk BEFORE INSERT ON hands \
+             WHEN NEW.site_hand_id = 'HD140646565' \
+             BEGIN SELECT RAISE(ABORT, 'refused by the test'); END;",
+        )
+        .unwrap();
+    let stats = repo
+        .insert_hands_batch(&[parse(WALK), parse(EV_CASHOUT)])
+        .unwrap();
+    assert_eq!(stats.hands_inserted, 1);
+    assert!(
+        matches!(&stats.rejected[..], [r] if r.site_hand_id == "HD140646565"
+            && matches!(r.error, StorageError::Sqlite(_))),
+        "{stats:?}"
+    );
+    assert_eq!(scalar(&repo, "SELECT COUNT(*) FROM hands"), 1);
+}
+
+#[test]
+fn duplicates_with_raw_text_on_both_sides_are_compared_by_text() {
+    // ARCHITECTURE §6: with raw text on both sides, the SHA-256 of the normalised text decides.
+    // A different showdown description parses to the same canonical hand but is different text.
+    let original = common::HU_SHOWDOWN;
+    let reworded = original.replace(
+        "445e6868: shows [4c Tc] (a pair of Fours)",
+        "445e6868: shows [4c Tc] (one pair, Fours)",
+    );
+    assert_ne!(reworded, original);
+    assert_eq!(parse(&reworded), parse(original), "same canonical hand");
+    let run = Uuid::now_v7();
+    let mut repo = SqliteRepository::open_in_memory().unwrap();
+    repo.insert_sourced_hands_batch(&[parse(original)], &[source(run, "a.txt", 1, original)])
+        .unwrap();
+    let stats = repo
+        .insert_sourced_hands_batch(&[parse(&reworded)], &[source(run, "b.txt", 1, &reworded)])
+        .unwrap();
+    assert!(
+        matches!(&stats.rejected[..], [r] if matches!(r.error, StorageError::ContentConflict { .. })),
+        "{stats:?}"
+    );
+}
+
+#[test]
+fn stale_cache_error_message_names_both_versions() {
+    // SPEC_v3.7 §2 step 5: the message names the cache's version (or none) and this build's.
+    let missing = StorageError::StaleDerivedCache {
+        found: None,
+        expected: STATS_VERSION,
+    }
+    .to_string();
+    assert!(missing.contains("cache version none"), "{missing}");
+    let newer = StorageError::StaleDerivedCache {
+        found: Some(STATS_VERSION + 1),
+        expected: STATS_VERSION,
+    }
+    .to_string();
+    assert!(
+        newer.contains(&format!("cache version {}", STATS_VERSION + 1))
+            && newer.contains(&format!("this build expected {STATS_VERSION}"))
+            && newer.contains("run the command again"),
+        "{newer}"
+    );
+}
+
+#[test]
+fn stored_build_and_run_times_are_utc_timestamps() {
+    // derived_cache.built_at and a batch-registered import run's started_at are UTC times in
+    // `%Y-%m-%dT%H:%M:%SZ`.
+    let mut repo = SqliteRepository::open_in_memory().unwrap();
+    let run = Uuid::now_v7();
+    repo.insert_sourced_hands_batch(&[parse(WALK)], &[source(run, "a.txt", 1, WALK)])
+        .unwrap();
+    let times: Vec<(String, String)> = rows(
+        &repo,
+        "SELECT (SELECT built_at FROM derived_cache), started_at FROM import_runs",
+    );
+    assert_eq!(times.len(), 1);
+    for t in [&times[0].0, &times[0].1] {
+        assert!(
+            chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%dT%H:%M:%SZ").is_ok(),
+            "not a UTC timestamp: {t:?}"
+        );
+    }
+}
+
+#[test]
+fn only_a_v3_4_shape_is_taken_for_a_v3_4_database() {
+    // ARCHITECTURE §6: id 0 + version 1 + both `hands` and `import_runs` is a v3.4 database;
+    // anything else that is not ours is refused and left untouched.
+    let cases: [(&str, i64, i64, &str); 5] = [
+        (
+            "hands only",
+            0,
+            1,
+            "CREATE TABLE hands (id INTEGER PRIMARY KEY);",
+        ),
+        (
+            "import_runs only",
+            0,
+            1,
+            "CREATE TABLE import_runs (id TEXT PRIMARY KEY);",
+        ),
+        (
+            "schema version 2",
+            0,
+            2,
+            "CREATE TABLE hands (id INTEGER PRIMARY KEY); CREATE TABLE import_runs (id TEXT);",
+        ),
+        (
+            "another application id",
+            0x1234,
+            1,
+            "CREATE TABLE hands (id INTEGER PRIMARY KEY); CREATE TABLE import_runs (id TEXT);",
+        ),
+        ("version 1, no tables", 0, 1, ""),
+    ];
+    for (label, app_id, version, ddl) in cases {
+        let file = NamedTempFile::new().unwrap();
+        {
+            let conn = rusqlite::Connection::open(file.path()).unwrap();
+            conn.execute_batch(ddl).unwrap();
+            conn.pragma_update(None, "application_id", app_id).unwrap();
+            conn.pragma_update(None, "user_version", version).unwrap();
+        }
+        let before = std::fs::read(file.path()).unwrap();
+        let err = SqliteRepository::open(file.path()).err();
+        assert!(
+            matches!(err, Some(StorageError::NotAPokerTrackerDatabase { .. })),
+            "{label}: {err:?}"
+        );
+        assert_eq!(
+            std::fs::read(file.path()).unwrap(),
+            before,
+            "{label}: file changed"
+        );
+    }
+}

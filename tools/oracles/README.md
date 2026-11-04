@@ -49,3 +49,18 @@ reports on); sections for the missing file then print a note.
 Last run: 2026-11-02, after the pre-M13 amendments (SPEC_v3.7 §11: walks and PFR opportunities,
 session `platform` and `duration_seconds`), on the 1,283 hands of `tests/fixtures/ggpoker/` plus
 HD145319803, and on the v3.6 folder alone (Python 3.13, eval7 0.1.11).
+
+## `equity_spots.py` (the `exact_equity` regression fixture)
+
+Writes `tests/fixtures/equity/eval7_spots.txt`: 2,130 spots fixed by a seed (1,000 random and
+1,000 tie-provoking river spots with 2–6 players, 100 turn and 30 flop spots), each with its
+exact equities from `eval7`. `tests/equity.rs::exact_equity_matches_eval7_on_2130_fixed_spots`
+compares the crate with them, so the evaluator's comparisons are pinned by `cargo test` without
+needing `eval7` there. The larger 50,524-spot differential run of `HANDOFF_v3.7_review.md`
+Appendix A found no mismatch either.
+
+```
+/tmp/oracle-venv/bin/python -I tools/oracles/equity_spots.py tests/fixtures/equity/eval7_spots.txt
+```
+
+The output is deterministic: rerunning it must leave the fixture unchanged (`git diff --exit-code`).
