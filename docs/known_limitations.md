@@ -1,7 +1,7 @@
 # Known Limitations (Deliberately Deferred)
 
-Living record of scope boundaries and intentionally deferred features for `poker_tracker` v3.6+.
-Derived from `docs/BLUEPRINT.md` §8 with updates from the v3.6 specification (`docs/SPEC_v3.6.md`).
+Living record of scope boundaries, intentionally deferred features and the planned milestones.
+It started from `docs/history/BLUEPRINT.md` §8.
 
 ---
 
@@ -18,10 +18,11 @@ Derived from `docs/BLUEPRINT.md` §8 with updates from the v3.6 specification (`
 - A stored hand that cannot be loaded makes the cache rebuild, and therefore every open by a
   v3.7 build, fail with an error naming the hand, until the row is repaired outside
   `poker_tracker`.
-- **Rebuild time.** Exact all-in equity enumerates every runout, so it dominates deriving the
-  cache: a heads-up preflop all-in takes well under 0.1 s in a release build, and the 1,284-hand
-  corpus rebuilds in under 1 s. A full rebuild grows with the number of preflop all-ins (about
-  10 minutes for a million hands at the corpus's rate) and holds the write lock meanwhile.
+- **Rebuild time.** Exact all-in equity enumerates every runout, so it dominates deriving the cache:
+  a heads-up preflop all-in takes well under 0.1 s in a release build, and the 1,283 corpus hands
+  plus HD145319803 (1,284 hands) rebuild in under 1 s. A full rebuild grows with the number of
+  preflop all-ins (about 10 minutes for a million hands at the corpus's rate) and holds the write
+  lock meanwhile.
 - **Sessions across time bases.** Sessions are listed by their printed `start`, also when one
   table is timed in UTC and another as printed (`docs/stats.md` §6.1), so such a listing can be
   out of real-time order. GGPoker states no UTC offset, so it cannot happen with its exports.
@@ -65,3 +66,36 @@ Derived from `docs/BLUEPRINT.md` §8 with updates from the v3.6 specification (`
   re-imported once.
 - **The betting replay assumes No-Limit.** Pot-Limit and Fixed-Limit support would add
   bet-size rules.
+
+---
+
+## Planned milestones (do not build before a spec covers them)
+
+From `docs/history/SPEC_v3.7.md` §8. M17 is the next version, v3.8.
+
+- **M17 — Filters.**
+  - A site-neutral filter tree (AND / OR / NOT, saved under a name), compiled to SQL over `hands`
+    and `hand_player_stats` and accepted by every report (`--filter <name>`).
+  - The groups follow PokerTracker 4:
+    - game details (currency, stakes, table size, dates);
+    - hand details (position, won/lost, showdown, pot size);
+    - session details (session net, duration);
+    - hand values (hole cards, made hand);
+    - board texture;
+    - actions and opportunities (any counter).
+  - Also `--player <name>`, for an opponent or the pool.
+  - The `--stakes` selection becomes one game-details filter, and the option keeps working.
+- **M19 — Database management.**
+  - Re-parse stored raw text and quarantined hands after a parser upgrade (this closes the
+    re-parsing limitation above).
+  - Export selected hands as raw text.
+  - Purge by date or run.
+  - SQLite online backup.
+  - Hero aliases across sites (the accounts layer).
+  - Optional "my currency" conversion with a stored rate per session (Game Currency vs My
+    Currency, as in PT4), never mixing stored amounts.
+- **Deferred further:**
+  - M18, a leak report: Hero's stats by position against reference ranges and the pool.
+  - M20, hand review: tags, notes, an HTML replayer.
+  - A cross-check of the pinned stats against PT4 on the same exports, by the owner for final
+    testing. PT4's rake attribution must be set to "contributed".

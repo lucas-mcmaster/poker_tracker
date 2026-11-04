@@ -11,5 +11,5 @@ indent_style = space
 indent_size = 4
 
 # Verbatim GGPoker hands: opponent "Dealt to" lines end with a space. Never trim them.
-[{tests/fixtures/**,tests/common/mod.rs,docs/BLUEPRINT.md}]
+[{tests/fixtures/**,tests/common/mod.rs,docs/history/BLUEPRINT.md}]
 trim_trailing_whitespace = false

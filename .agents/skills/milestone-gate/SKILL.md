@@ -13,6 +13,8 @@ description: Runs the poker_tracker milestone gate (rustfmt check, clippy with w
   - otherwise, for a **code** milestone, strictly more than the previous milestone's count; for
     a **docs-only** milestone, exactly the previous count. The previous count is in the newest
     `milestone <N>: … (gate: <count> tests passing)` commit message.
+  - Counts on Windows are one lower than on Linux (`tests/cli.rs::non_unicode_cli_arguments` is
+    `#[cfg(unix)]`); compare counts from the same platform.
 
 ## Steps
 
@@ -43,11 +45,9 @@ On failure, add:
 
 ## Rules
 
-- Never "fix" a failure by editing an existing test (unless the current spec explicitly
+- Never "fix" a failure by editing any of these: an existing test (unless the current spec
   authorizes that test), fixtures, `Cargo.toml` lints, `#[allow]` attributes, `Cargo.lock`,
   expected counts or the spec's expected numbers. Never add `--ignore-rust-version`.
-- Never run `tools/blueprint extract` or `check`: `docs/BLUEPRINT.md` is frozen at v3.5 and
-  extraction would overwrite later work.
 - If `cargo fmt --check` fails, run `cargo fmt` on the modified Rust files and re-run the gate.
 - A `real_session` or `real_session_v3_6` SHA-256 failure means a fixture file is not
   byte-for-byte the original export (line endings or trailing spaces); restore the original file.

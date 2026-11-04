@@ -2,7 +2,7 @@
 # conversion (the golden tests compare bytes, LF endings included).
 tests/fixtures/** -text
 tests/golden/** -text
-docs/BLUEPRINT.md -text
+docs/history/BLUEPRINT.md -text
 # Source files always use LF, whatever the platform.
 *.rs text eol=lf
 *.toml text eol=lf

@@ -1,8 +1,7 @@
 # `poker_tracker` Invariants
 
-Living domain, validator and site-parser rules for `poker_tracker` v3.6+.
-Derived from `docs/BLUEPRINT.md` §6 with the v3.6 extensions for heads-up hands, summary shows,
-straddles, and EV Cashout on both sides.
+Living rules for `poker_tracker`: the site-neutral validator (§1), the GGPoker format (§2), and
+the derived cache and reports (§3). It started from `docs/history/BLUEPRINT.md` §6.
 
 ---
 
@@ -148,154 +147,120 @@ Site-specific text format rules observed in real exports:
 
 ---
 
-## 3. Derived data (`src/stats/`, `src/report/`, `hand_player_stats`)
+## 3. Derived data and reports (`src/stats/`, `src/report/`, `hand_player_stats`)
 
-Rules for the derived statistics cache (v3.7, M13–M16) and the reports built on it (M15–M16).
-Definitions of every position, counter, money column and session are in `docs/stats.md`; the
-lifecycle contract is `docs/SPEC_v3.7.md` §2 and the report contract §6.
+`docs/stats.md` defines every position, counter, money column, session and equity figure. This
+section holds the rules it does not state. The module, report and CLI contracts are in
+`.agents/rules/ARCHITECTURE.md` §7–§8.
 
 ### Cache lifecycle
 
 - **A cache only.** `hand_player_stats` is computed only from stored canonical hands. Validation,
   ingestion and duplicate detection never read it, and dropping it loses nothing.
-- **Shape.** One row per `hand_players` row: `(hand_id, player_id)` primary key, a nullable
+- **Shape.** One row per `hand_players` row: `(hand_id, player_id)` primary key (`hand_id`
+  references `hands(id)` `ON DELETE CASCADE`, `player_id` references `players(id)`
+  `ON DELETE RESTRICT`), a nullable
   `position` code (0–9), and one `INTEGER NOT NULL` column per entry of `stats::COLUMNS`, in that
   order. Every column carries `CHECK (… >= 0)` except `ev_net_micros`, which is signed. The table
-  is created by the rebuild, never by `MIGRATIONS`.
+  (`STRICT, WITHOUT ROWID`) is created by the rebuild, never by `MIGRATIONS`.
 - **Versioning.** `derived_cache(name, version, built_at)` (migration 3) holds one row,
-  `name = 'hand_player_stats'`, with the `STATS_VERSION` the cache was built with. As
-  `AGENTS.md` §3.10 says, changing the definition of any stored column (position, counter, money
-  or equity column) bumps `STATS_VERSION` in the same commit; figures computed at report time
-  (stat ratios, `bb_won`, `bb/100`, sessions) do not.
+  `name = 'hand_player_stats'`, with the `STATS_VERSION` the cache was built with. When that
+  version is bumped: `AGENTS.md` §3.10.
 - **Insert.** A newly stored hand's rows are written in its own savepoint; a duplicate writes
   none.
 - **Rebuild on open.** After migrations, if the `derived_cache` row is missing or its version
   differs from `STATS_VERSION`, the open rebuilds the whole cache in one `BEGIN IMMEDIATE`
-  transaction, re-reading the version under the lock so concurrent opens rebuild once.
-  `rebuilt_on_open()` reports it. `rebuild_derived()` (CLI `--rebuild-stats`) rebuilds
-  unconditionally.
-- **Unloadable hand.** If a stored hand cannot be loaded or an error occurs while processing a
-  hand during cache rebuild (e.g. `MissingPlayerId`), the rebuild and open fail with
-  `StorageError::DerivedRebuildFailed { platform, site_hand_id, source }` (stored text, so it
-  names the hand even when the platform column is the corrupt value) and nothing changes.
-- **Version guard.** `insert_hands_batch` and `insert_sourced_hands_batch` re-read
-  `derived_cache.version` under their write lock before any write. A missing or different
-  version is `StorageError::StaleDerivedCache { found, expected }`: a batch-level error that
-  stores and quarantines nothing. They never rebuild by themselves. `report::write_report` makes
-  the same check as the first read of its one read transaction and, on a mismatch, writes
-  nothing to its output.
+  transaction: it drops the table, creates it from `COLUMNS`, derives every stored hand and
+  upserts `derived_cache`. It re-reads the version under the lock, so concurrent opens rebuild
+  once. A new, empty database is rebuilt instantly. `rebuilt_on_open()` reports it.
+  `rebuild_derived()` (CLI `--rebuild-stats`) rebuilds unconditionally.
+- **Waiting.** Every open takes the write lock briefly (the migration loop). An open that starts
+  while another connection rebuilds waits up to the 5 s busy timeout, then fails with the usual
+  lock error (CLI exit `1`); it is not retried. The concurrency test therefore uses a small
+  database (a few hands), so its rebuild stays far inside the timeout in a debug build.
+- **Unloadable hand.** If a stored hand cannot be loaded, or an error occurs while processing it
+  during a rebuild (e.g. `MissingPlayerId`), the rebuild and the open fail with
+  `StorageError::DerivedRebuildFailed { platform, site_hand_id, source }` and nothing changes.
+  `platform` and `site_hand_id` are read from `hands` as stored text, so the error names the hand
+  even when the platform column is the corrupt value. The message names the hand and the load
+  error (`cannot rebuild the statistics cache: GGPoker hand HD140650557 cannot be loaded: …`).
+  This fails closed on purpose: such a database cannot be opened by this build, not even for
+  `--delete-run`, until the row is repaired outside `poker_tracker`.
+- **Version guard.** A connection can outlive the cache it opened: another build may rebuild it
+  meanwhile. So `insert_hands_batch` and `insert_sourced_hands_batch` re-read
+  `derived_cache.version` under their write lock before the first savepoint, and
+  `report::write_report` makes the same check as the first read of its one read transaction. A
+  missing or different version is `StorageError::StaleDerivedCache { found: Option<i64>,
+  expected: i64 }`.
+  - For an insert, this is a batch-level error (like a lock error): it stores and quarantines
+    nothing, the pipeline returns `PipelineError::Storage`, and the CLI exits `1`. It never
+    surfaces as per-hand rejections.
+  - For a report, it writes nothing to its output.
+  - The message says that another `poker_tracker` build changed the statistics cache (cache
+    version `found`, this build `expected`) and to run the command again. The next open
+    rebuilds the cache.
+  - The guard never rebuilds by itself. A mismatch means two builds share the database, which
+    must be visible, and a rebuild inside an import's write lock can take seconds.
+  - `rebuild_derived` and `delete_import_run` need no guard.
 - **Delete.** Rows go with their hand (`ON DELETE CASCADE` on `hand_id`).
 
-### Positions (`docs/stats.md` §2)
+### Positions
 
-- PokerTracker numbering, counted **counter-clockwise from the button** among the players dealt
-  in, with the blinds fixed: `SB` = 9, `BB` = 8, then `BTN` = 0, `CO` = 1, and 2, 3, … for the
-  next players counter-clockwise.
-- Labels are derived at report time from the code and `max_seats`: with `max_seats ≤ 6`, code 2
-  is `MP` and codes 3–7 are `EP`; with `max_seats ≥ 7`, codes 2–4 are `MP` and 5–7 are `EP`.
-  Only the code is stored.
-- **Heads-up:** the button posts the small blind and is `SB` (9); the other player is `BB` (8).
-  There is no code 0.
-- The SB is the single `PostSmallBlind` poster and the BB the first `PostBigBlind` poster. A
-  player who posts a missed blind or an extra big blind, or who straddles, keeps their seat's
-  position.
-- **Standard layout check.** Positions are assigned only when the button seat is dealt in,
-  exactly one small blind is posted, and (3+ players) the SB is the first player clockwise after
-  the button and the BB the first player clockwise after the SB, or (heads-up) the button is the
-  SB. Otherwise every player in the hand gets `NULL`.
+Defined in `docs/stats.md` §2, including its standard layout check (when it fails, every
+position of the hand is `NULL`). Heads-up, the button is the SB, so its open is a steal attempt
+that the BB faces (`docs/stats.md` §4.1).
 
+### Fail-closed derived values
 
-### Opportunity counters (`docs/stats.md` §3, §4.1–§4.2)
+`derive_hand_stats` is infallible. An amount it cannot represent in micro-units, and a sum that
+overflows, never become a plausible value. For hands storage can hold this never happens: every
+stored amount is an `i64` of micro-units, and storage computes the sums itself. So no definition
+in `docs/stats.md` depends on this policy.
 
-- **State at a decision:** computed by replaying the street up to, not including, the decision.
-- **Single evaluation per player-hand:** opportunities are counted at the player's first
-  qualifying decision, with two exceptions: `p_4bet_fold` counts any fold at `raises >= 3`,
-  and `p_pfr_opp` counts any decision with `can_raise`.
-- **Cold call:** `p_cc_opp` requires no money in the pot (no forced post of any kind).
-- **Steal:** `p_steal_opp` requires `p_rfi_opp`, seat position CO (1), BTN (0), or SB (9), and
-  the hand has no `PostStraddle`. Heads-up, the SB's open is a steal attempt that the BB faces.
-- **C-bets:** `f_cbet_faced` and `t_cbet_faced` require no `Raise` between the c-bet and the
-  decision; `t_cbet_opp` is available only to the player who made the flop c-bet.
+- **Money:**
+  - A blind or straddle sum that overflows makes that column `0`.
+  - If any player's `invested` cannot be represented, every rake and fee part of the hand is `0`.
+  - The largest-remainder split computes its products, weights and parts in `i128`, with
+    negative weights clamped to 0 in both the products and the sum.
+- **All-in equity:** the hand does not qualify (`ev_qualified = 0`, equity `0/1`,
+  `ev_net_micros = net_micros`) when any of these cannot be represented or overflows:
+  - a live player's `invested`, `PostDeadBlind` amounts, adjustments or net;
+  - the deductions sum;
+  - the pot after deductions;
+  - a live player's `ev_net_micros`.
 
-### Money (`docs/stats.md` §6.1)
+### Reports
 
-- `blinds_posted_micros` sums the player's `PostSmallBlind`, `PostBigBlind` and `PostDeadBlind`
-  amounts; `straddles_posted_micros` sums their `PostStraddle` amounts.
-- **Fail-closed policy.** An amount that cannot be represented in micro-units, or a sum that
-  overflows, never becomes a plausible value. Blind or straddle sums that overflow make that
-  column `0`. If any player's `invested` cannot be represented, every rake and fee part of the
-  hand is `0`.
-- **Contributed method.** `rake_attributed_micros` splits the hand's `Rake` deductions, and
-  `fees_attributed_micros` one sum of all its other deductions (`Jackpot` and `Other`), among all
-  players in proportion to `invested`.
-- **Largest remainder.** Each player gets `floor(T × invested / W)` (`W` = the invested total =
-  `total_pot`), with `i128` products and weights and parts summed in `i128` (negative weights
-  clamped to 0 in products and sum); the leftover micro-units go one each to the largest
-  remainders `(T × invested) mod W`, ties to the lower seat number. The parts sum exactly to the
-  hand's `Rake` and to its other deductions (a corpus test checks every hand). If `T` or `W` is
-  `0`, every part is `0`.
+- **Hero only, per currency.** Every row covers the hero's hands in one currency. Currencies are
+  listed alphabetically, and amounts are never added across them.
+- **Reading.** One read transaction, after the version guard. Reports read only integer columns,
+  integer `SUM`s and text columns; arithmetic and display follow `docs/stats.md` §1.2.
+- **Exact rates.** `bb_won`, `bb/100` and `ev_bb_per_100` (`docs/stats.md` §6.1–§6.2) use checked
+  `i128` fractions. A figure that does not fit fails the report with
+  `ReportError::ArithmeticOverflow { figure }`, naming the figure. Nothing is written, and the
+  CLI exits `1`.
+- **CSV.** A header line, then the rows, with LF endings. A database with no hands prints the
+  header only. Text fields (`currency`, `stakes`, `platform`, `table`, `position`, `stat`) are
+  quoted per RFC 4180 when they contain `,`, `"`, CR or LF (quotes doubled); every other field
+  is unquoted.
+- **Columns and rows**, in this order:
 
-### All-in equity (`docs/stats.md` §6.2)
+  | Report | Columns | Rows |
+  | --- | --- | --- |
+  | `results` | `currency,stakes,hands,net,net_per_100,bb_won,bb_per_100,rake,fees,blinds,straddles,allin_hands,ev_net,ev_bb_per_100` | Grouped by currency. Within a currency there is one row per stakes among the selected hands, ordered by big blind then small blind. `stakes` is `<sb>/<bb>`, each amount printed exactly (`0.05/0.1`). Then comes one `stakes = ALL` row combining all of that currency's selected stakes, every column included, as the last row of the block, present only when the block has more than one stakes row |
+  | `positions` | `currency,position,hands,net,bb_per_100,vpip,pfr,rfi` | One per currency and position label, in the order `EP, MP, CO, BTN, SB, BB`, then `?` for `NULL` positions if any |
+  | `sessions` | `currency,platform,table,start,end,duration_seconds,hands,net,bb_per_100,ev_net` | One per session (`docs/stats.md` §6.1), ordered by currency, `start` as printed, table, then platform. `platform` is `Platform::as_str()` (the session key includes it, so two sites' tables of the same name stay apart). `start`/`end` are the first and last hands' timestamps as stored (`2026-08-21T16:54:10`). `duration_seconds` is an integer |
+  | `stats` | `currency,stat,numerator,denominator,value` | One per stat of `docs/stats.md` §5, in that table's order (`af_*` and `afq_*` last). For `vpip`, the denominator printed is `Σ hands − Σ p_walk` |
 
-- **Qualification and fail-closed policy.** A hand qualifies for all-in equity when all four
-  conditions hold:
-  1. at least two players are live (not folded) at the end;
-  2. the last action that is not an `UncalledBetReturned` is on the preflop, flop or turn (the
-     **all-in street**; cards were still to come);
-  3. every live player's two hole cards are known;
-  4. every live player has the same live contribution (`invested` minus their `PostDeadBlind`
-     amounts): a single pot. Multiway all-ins with side pots are excluded.
-  When any condition fails, or an amount the equity uses cannot be represented in micro-units or
-  a sum overflows (a live player's `invested`, `PostDeadBlind` amounts, adjustments or net; the
-  deductions sum; the pot after deductions; a live player's `ev_net_micros`), the hand fails
-  closed and does not qualify (`ev_qualified = 0`, equity `0/1`, `ev_net_micros = net_micros`).
-- **Board and deck rule.** Equity enumerates every completion of the board cards dealt by the
-  all-in street (preflop: 0; flop: 3; turn: 4; for multi-run hands, the first run's cards up to
-  that street). Only the board cards and the **live players'** hole cards are removed from the
-  deck; a folded player's cards remain in the deck even when known. A runout won by `k` players
-  awards `1/k`. Running it more than once does not change the expectation, so multi-run hands
-  use the same rule.
-- **Pot basis.** The equity applies to the pot after **all** deductions:
-  `total_pot − Σ all deductions` (= `Σ payouts`).
-- **EV Cashout rule.** A player who chose EV Cashout keeps their actual net
-  (`ev_net_micros = net_micros`). Their opponents are adjusted normally.
-- **Rounding and stored columns.**
-  `ev_net_micros = round_half_even(num × pot_after / den) − invested + adjustments` (one
-  half-even rounding to micro-units, with `i128` products). When not qualified or when the
-  player took EV Cashout, `ev_net_micros` equals `net_micros`. Equity is stored as the reduced
-  fraction `(ev_equity_num, ev_equity_den)` in lowest terms (`0/1` when not qualified).
-
-### Reports (`src/report/`, `docs/SPEC_v3.7.md` §6)
-
-- **Hero only, per currency.** Every row covers the hero's hands in one currency; currencies are
-  listed alphabetically and amounts are never added across them.
-- **Integers in, `Decimal` out.** Only integer columns, integer `SUM`s and text columns are read
-  from SQLite, and nothing is divided in SQL. Ratios are computed with `Decimal`. Percents,
-  factors, `bb_won`, `bb/100` and `$/100` are rounded half-even to 2 decimals and printed with 2;
-  money is printed exactly, trailing zeros removed; a zero denominator prints an empty cell.
-- **`bb_won` and rate aggregation.** `bb_won` is the exact rational `Σ_g net_g / bb_g` over the
-  row's big-blind values `g` (integers in micro-units), dividing once per big-blind value.
-  `bb/100` is exactly `100 × bb_won / hands`. `ev_bb_per_100` uses the same rational aggregation
-  with `ev_net_micros`. Each is computed using checked `i128` fractions; if arithmetic overflows,
-  the report fails closed with `ReportError::ArithmeticOverflow { figure }`. Printed figures round
-  half-even to 2 decimal places (`0.00`, never `-0.00`).
-- **CSV quoting.** Text fields (`currency`, `stakes`, `platform`, `table`, `position`, `stat`)
-  are quoted per RFC 4180 when they contain `,`, `"`, CR or LF (quotes doubled); other fields
-  remain unquoted.
-- **Stakes selection.** Each `--stakes` amount is a positive plain decimal: ASCII digits with at
-  most one `.`, which has digits on both sides, at most 6 decimal places, surrounding spaces
-  ignored. Amounts are compared numerically with the stored blinds in every currency. A repeated
-  item counts once; an item that matches no hero hand is reported, not an error.
+- **Stakes selection** (`--stakes`, `ReportOptions::stakes`):
+  - Each item is a small blind then a big blind. Each amount is a positive plain decimal: ASCII
+    digits with at most one `.`, which has digits on both sides, and at most 6 decimal places.
+    Surrounding spaces are ignored.
+  - Items are compared numerically with the stored blinds (`0.05/0.10` selects the stakes
+    printed `0.05/0.1`), in every currency, and currencies stay separate.
+  - A repeated item counts once. An item that matches no hero hand is reported, not an error.
+  - Every report covers only the selected hands, and sessions are formed from them.
+  - Together with the `results` rows per stakes and the `ALL` rows, this gives results by stakes,
+    for all stakes combined, and for any combination of stakes.
 - **Corrupt rows fail closed.** A stored timestamp that does not parse is
   `StorageError::CorruptRow`, as when the hand is loaded; it never becomes a default value.
-
-### Sessions (`docs/stats.md` §6.1)
-
-- A session is a maximal run of the hero's hands at one table, the same `(platform, currency,
-  table_name)`, whose consecutive hands start at most 30 minutes apart (inclusive). Sessions are
-  computed at report time from the selected hands and never cached.
-- **One time basis per table:** UTC (timestamp minus `utc_offset_seconds`) when every selected
-  hand of the table states an offset, otherwise the timestamps as printed. Hands are ordered by
-  that time, then site hand id. Gaps and `duration_seconds` (first to last hand start, whole
-  seconds) use it, so neither is negative.
-- Sessions are listed by currency, `start` as printed, table, then platform.

@@ -1,10 +1,10 @@
 # `poker_tracker` Statistics Reference
 
-Living definitions of every derived statistic. Introduced for v3.7 (`docs/SPEC_v3.7.md`). The
-stat list starts from the PokerTracker 3 statistical reference (names and formulas kept so that
-results can later be compared with PT3/PT4); VPIP and PFR use PokerTracker 4's denominators
-(§5). Every definition below is restated in terms of the canonical model so it can be computed
-identically for any site.
+Living definitions of every derived statistic. Introduced for v3.7 (`SPEC_v3.7`, now in
+`docs/history/`). The stat list starts from the PokerTracker 3 statistical reference (names and
+formulas kept so that results can later be compared with PT3/PT4); VPIP and PFR use PokerTracker 4's
+denominators (§5). Every definition below is restated in terms of the canonical model so it can be
+computed identically for any site.
 
 **This file is authoritative.** Code (`src/stats/`) and the independent oracle
 (`tools/oracles/v3_7_oracle.py`) implement it. If they disagree with this file, they have a bug.
@@ -52,7 +52,7 @@ figures computed at report time (the §5 ratios, `bb_won`, `bb/100`, sessions) d
 - `STATS_VERSION` (an integer constant in `src/stats/`) identifies the definitions. The table
   `derived_cache(name, version, built_at)` records the version the cache was built with. When
   the row is missing or its version differs, opening the database rebuilds the cache
-  (SPEC_v3.7 M13).
+  (`docs/invariants.md` §3).
 - Every column added by a milestone bumps `STATS_VERSION`: 1 = M13, 2 = M14, 3 = M15, 4 = M16.
 
 ---

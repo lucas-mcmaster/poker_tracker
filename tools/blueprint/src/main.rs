@@ -6,7 +6,7 @@
 //! - `blueprint check <M>`: reports files that are missing, differ from the blueprint, or belong
 //!   to a later milestone; exits with code 1 if there is any.
 //!
-//! Options: `--blueprint <file>` (default `docs/BLUEPRINT.md`), `--root <dir>` (default `.`).
+//! Options: `--blueprint <file>` (default `docs/history/BLUEPRINT.md`), `--root <dir>` (default `.`).
 //! Line endings are compared as LF, so a CRLF checkout is not reported as drift.
 
 use std::collections::BTreeMap;
@@ -110,7 +110,7 @@ fn run(args: &[String]) -> Result<bool, String> {
         _ => return Err(USAGE.to_string()),
     };
     let milestone: u32 = milestone.parse().map_err(|_| USAGE.to_string())?;
-    let mut blueprint = PathBuf::from("docs/BLUEPRINT.md");
+    let mut blueprint = PathBuf::from("docs/history/BLUEPRINT.md");
     let mut root = PathBuf::from(".");
     let mut rest = args.iter().skip(2);
     while let Some(flag) = rest.next() {

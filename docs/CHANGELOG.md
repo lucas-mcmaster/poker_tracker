@@ -33,6 +33,7 @@ History only, never a specification. The current spec and living rules are liste
 - **M16.2.6 (Leniencies tightened):** card tokens require observed case (`23456789TJQKA` / `cdhs`); `shows` regex restricted to single parenthesised description; duplicate summary position labels rejected; opponent `Dealt to` trailing space documented as not enforced.
 - **M16.2.7 (Exhaustive matching and domain documentation):** `validate_betting` matches exhaustively on `BettingLimit` and `GameType`; domain doc comments reworded site-neutrally; living invariants updated.
 - **M16.2 review:** a street dealt after the betting ended is dealt anew in each runout, so a runout that repeats it is refused as `DuplicateCard` (before, a runout equal to the first on such a street counted as shared); a body `shows` description may not be empty. New tests pin `from_str_exact`, the `SECOND TURN` header rule, the flop and river branches of the shared-streets rule, and repeated `(button)` and `(small blind)` labels. M16.2 also gave the second hero of `rejects_zero_or_multiple_heroes` hole cards, so that the rule the test names fires (an edit the spec did not list).
+- **Docs condensed (after v3.7.1; the crate is unchanged):** the finished specs and `BLUEPRINT.md` moved unchanged to `docs/history/` (index in its `README.md`); the contracts still in force (stats and report APIs, cache lifecycle, CLI, CSV columns, the M17–M20 plan) moved into `ARCHITECTURE.md`, `docs/invariants.md` and `docs/known_limitations.md`; `docs/invariants.md` §3 keeps only what `docs/stats.md` does not define; `.agents/rules/TASKS.md` merged into `AGENTS.md` §4.
 
 ## v3.6.1 → v3.7
 
@@ -73,7 +74,7 @@ Final v3.7 test count: 182 tests passing (zero failures).
 
 ## v3.6 → v3.6.1 (audit fixes)
 
-From the audit of `1af1f57`; see `docs/SPEC_v3.6.1.md`.
+From the audit of `1af1f57`; see `docs/history/SPEC_v3.6.1.md`.
 
 - **Never-observed shapes now refused:** heads-up missed blind, all-in straddle, blind for less than the stake, a second straddle by the same player, heads-up straddle, heads-up button not posting the small blind.
 - **Summary checks:** an opponent's uncontested summary show includes every body-shown card; `won` needs a flop on every `showed` line.
