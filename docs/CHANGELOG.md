@@ -13,6 +13,17 @@ History only, never a specification. The current spec and living rules are liste
 | v3.2 | — | 55 | Fixes from the review of v3.1 against the real export: per-milestone file variants, lossless money, multi-run boards, dead blinds, EV Cashout, one-card shows, strict validation. |
 | v3.1 | — | — | The original blueprint (Milestone 2 did not compile). |
 
+## v3.7 → v3.7.1
+
+- **M16.1.1 (Exact `bb_won` aggregation):** `bb_won`, `bb/100`, and `ev_bb_per_100` aggregated as exact rational fractions over big blinds, rounded half-even to 2 decimals, with `ReportError::ArithmeticOverflow` on overflow.
+- **M16.1.2 (Derived-data fail-closed fallbacks):** `split_by_largest_remainder` sums weights and parts in `i128` (clamping negative weights to 0); equity pot/deduction and money post sums fail closed without plausible partial values.
+- **M16.1.3 (Non-Unicode CLI arguments):** CLI reads `std::env::args_os()`, preserving path arguments as `PathBuf` and exiting 2 on non-Unicode text option values instead of panicking with exit 101.
+- **M16.1.4 (No import run on failed first batch):** import run registration deferred to batch/quarantine transaction, leaving no dangling `import_runs` rows on failure.
+- **M16.1.5 (Testable rebuild-once decision):** `rebuild_if_stale` factored to verify that opens finding the current `STATS_VERSION` under the write lock do not rebuild.
+- **M16.1.6 (Rebuild errors name the hand):** rebuild derived errors wrap load and insert errors in `DerivedRebuildFailed` naming the platform and hand ID; missing seated players return `MissingPlayerId`.
+- **M16.1.7 (CSV RFC 4180 quoting):** report text fields containing commas, double quotes, CR, or LF are quoted with doubled quotes.
+- **M16.1.8 (Docs and CLI wording):** updated `docs/invariants.md` and `docs/CHANGELOG.md`; refined CLI usage strings, `--rebuild-stats` combined option error messages, and `--delete-run` notices.
+
 ## v3.6.1 → v3.7
 
 - **M16 (Exact all-in equity and equity-adjusted results):**

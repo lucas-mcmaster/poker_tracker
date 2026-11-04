@@ -1512,3 +1512,152 @@ fn an_all_in_big_blind_who_never_acts_is_not_a_walk() {
     let stats = derive_hand_stats(&h);
     assert_eq!(stats.iter().map(|s| s.p_walk).collect::<Vec<_>>(), [0, 0]);
 }
+
+#[test]
+fn split_by_largest_remainder_overflow_protection_in_derive_hand_stats() {
+    use poker_tracker::domain::{DeductionKind, PotDeduction};
+    let p = vec![
+        make_player(1, "Hero", dec!(5_000_000_000_000), true),
+        make_player(2, "Villain", dec!(5_000_000_000_000), false),
+    ];
+    let a = vec![
+        make_action(
+            0,
+            Street::Preflop,
+            "Hero",
+            ActionType::PostSmallBlind,
+            dec!(5_000_000_000_000),
+            dec!(5_000_000_000_000),
+            true,
+        ),
+        make_action(
+            1,
+            Street::Preflop,
+            "Villain",
+            ActionType::PostBigBlind,
+            dec!(5_000_000_000_000),
+            dec!(5_000_000_000_000),
+            true,
+        ),
+    ];
+    let mut h = make_canonical_hand(1, p, a, vec![], vec![("Villain", dec!(0.99))]);
+    h.outcome.total_pot = dec!(1.0);
+    h.outcome.deductions = vec![PotDeduction {
+        kind: DeductionKind::Rake,
+        label: "Rake".to_string(),
+        amount: dec!(0.01),
+    }];
+    let stats = derive_hand_stats(&h);
+    assert_eq!(stats[0].rake_attributed_micros, 5_000);
+    assert_eq!(stats[1].rake_attributed_micros, 5_000);
+}
+
+#[test]
+fn unrepresentable_total_pot_fails_closed_in_compute_all_in_equity() {
+    let mut p = vec![
+        make_player(1, "Hero", dec!(10), true),
+        make_player(2, "Villain", dec!(10), false),
+    ];
+    p[0].hole_cards = [Some("Ah".parse().unwrap()), Some("Ad".parse().unwrap())];
+    p[1].hole_cards = [Some("Kh".parse().unwrap()), Some("Kd".parse().unwrap())];
+    let a = vec![
+        make_action(
+            0,
+            Street::Preflop,
+            "Hero",
+            ActionType::PostSmallBlind,
+            dec!(0.05),
+            dec!(0.05),
+            false,
+        ),
+        make_action(
+            1,
+            Street::Preflop,
+            "Villain",
+            ActionType::PostBigBlind,
+            dec!(0.10),
+            dec!(0.10),
+            false,
+        ),
+        make_action(
+            2,
+            Street::Preflop,
+            "Hero",
+            ActionType::Call,
+            dec!(0.05),
+            dec!(0.10),
+            false,
+        ),
+        make_action(
+            3,
+            Street::Preflop,
+            "Villain",
+            ActionType::Check,
+            dec!(0),
+            dec!(0.10),
+            false,
+        ),
+        make_action(
+            4,
+            Street::Flop,
+            "Villain",
+            ActionType::Check,
+            dec!(0),
+            dec!(0),
+            false,
+        ),
+        make_action(
+            5,
+            Street::Flop,
+            "Hero",
+            ActionType::Check,
+            dec!(0),
+            dec!(0),
+            false,
+        ),
+        make_action(
+            6,
+            Street::Turn,
+            "Villain",
+            ActionType::Check,
+            dec!(0),
+            dec!(0),
+            false,
+        ),
+        make_action(
+            7,
+            Street::Turn,
+            "Hero",
+            ActionType::Bet,
+            dec!(9.90),
+            dec!(9.90),
+            true,
+        ),
+        make_action(
+            8,
+            Street::Turn,
+            "Villain",
+            ActionType::Call,
+            dec!(9.90),
+            dec!(9.90),
+            true,
+        ),
+    ];
+    let board = CommunityCards {
+        run_index: 0,
+        flop: Some([
+            "2c".parse().unwrap(),
+            "7d".parse().unwrap(),
+            "9h".parse().unwrap(),
+        ]),
+        turn: Some("Ks".parse().unwrap()),
+        river: Some("3s".parse().unwrap()),
+    };
+    let mut h = make_canonical_hand(1, p, a, vec![board], vec![("Hero", dec!(20))]);
+    h.outcome.total_pot = dec!(20.0000005);
+    let stats = derive_hand_stats(&h);
+    assert_eq!(stats[0].ev_qualified, 0);
+    assert_eq!(stats[0].ev_net_micros, 10_000_000);
+    assert_eq!(stats[1].ev_qualified, 0);
+    assert_eq!(stats[1].ev_net_micros, -10_000_000);
+}

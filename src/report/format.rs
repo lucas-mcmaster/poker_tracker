@@ -1,8 +1,29 @@
 //! Formatting helpers for report output (stats.md §1.2).
 
+use std::borrow::Cow;
+
 use rust_decimal::{Decimal, RoundingStrategy};
 
 use crate::domain::money::micro_units_to_decimal;
+
+/// Quotes a CSV text field per RFC 4180 if it contains comma, double quote, CR, or LF.
+#[must_use]
+pub fn quote_csv_text(s: &str) -> Cow<'_, str> {
+    if s.contains([',', '"', '\r', '\n']) {
+        let mut out = String::with_capacity(s.len() + 4);
+        out.push('"');
+        for ch in s.chars() {
+            if ch == '"' {
+                out.push('"');
+            }
+            out.push(ch);
+        }
+        out.push('"');
+        Cow::Owned(out)
+    } else {
+        Cow::Borrowed(s)
+    }
+}
 
 /// Formats exact money amounts with trailing zeros removed (`-25.79`, `14.23115`, `-1`, `0`).
 #[must_use]

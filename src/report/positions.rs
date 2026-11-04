@@ -3,9 +3,8 @@
 use std::collections::BTreeMap;
 
 use rusqlite::Transaction;
-use rust_decimal::Decimal;
 
-use super::format::{format_exact_money, format_fixed2, format_pct};
+use super::format::{format_exact_money, format_pct, quote_csv_text};
 use super::{BbWon, ReportError, Stakes};
 use crate::stats::position_label;
 
@@ -28,8 +27,8 @@ impl PositionsRow {
     pub fn to_csv_line(&self) -> String {
         format!(
             "{},{},{},{},{},{},{},{}",
-            self.currency,
-            self.position,
+            quote_csv_text(&self.currency),
+            quote_csv_text(&self.position),
             self.hands,
             self.net,
             self.bb_per_100,
@@ -134,8 +133,7 @@ pub(crate) fn build_positions_rows(
                 if agg.hands <= 0 {
                     continue;
                 }
-                let bb_per_100_dec =
-                    (agg.bb_won.total() / Decimal::from(agg.hands)) * Decimal::from(100);
+                let bb_per_100_str = agg.bb_won.format_bb_per_100(agg.hands, "bb_per_100")?;
                 let vpip_den = agg.hands.saturating_sub(agg.p_walk);
 
                 rows.push(PositionsRow {
@@ -143,7 +141,7 @@ pub(crate) fn build_positions_rows(
                     position: label.to_string(),
                     hands: agg.hands,
                     net: format_exact_money(agg.net_micros),
-                    bb_per_100: format_fixed2(bb_per_100_dec),
+                    bb_per_100: bb_per_100_str,
                     vpip: format_pct(agg.p_vpip, vpip_den),
                     pfr: format_pct(agg.p_pfr, agg.p_pfr_opp),
                     rfi: format_pct(agg.p_rfi, agg.p_rfi_opp),

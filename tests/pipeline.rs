@@ -371,3 +371,25 @@ fn a_storage_failure_is_described_as_such() {
         "rejected by storage: duplicate content"
     );
 }
+
+#[test]
+fn ingest_directory_at_records_exact_started_at() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("session.txt"), SAMPLE_SESSION).unwrap();
+    let mut repo = SqliteRepository::open_in_memory().unwrap();
+    let fixed_time = chrono::DateTime::parse_from_rfc3339("2026-11-03T14:30:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let report = DirectoryIngester::default()
+        .ingest_directory_at(dir.path(), &registry(), &mut repo, fixed_time)
+        .unwrap();
+    let stored_started: String = repo
+        .connection()
+        .query_row(
+            "SELECT started_at FROM import_runs WHERE id = ?1",
+            [report.batch_run_id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored_started, "2026-11-03T14:30:00Z");
+}

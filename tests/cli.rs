@@ -390,3 +390,59 @@ fn option_combinations_order_and_rebuild_notices() {
         "{err}"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn non_unicode_cli_arguments() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let exports = dir.path().join("exports");
+    fs::create_dir(&exports).unwrap();
+    fs::write(exports.join("s.txt"), SAMPLE_SESSION).unwrap();
+
+    let db_path = dir.path().join(OsStr::from_bytes(b"caf\xE9.sqlite"));
+
+    let run_os = |args: &[&OsStr]| -> (i32, String, String) {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_poker_tracker"))
+            .current_dir(dir.path())
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+
+    // 1. --rebuild-stats on missing db with non-Unicode path exits 1 (fatal: not found), not 101 panic.
+    let (code, _, _) = run_os(&[
+        OsStr::new("--rebuild-stats"),
+        OsStr::new("--db"),
+        db_path.as_os_str(),
+    ]);
+    assert_eq!(code, 1);
+
+    // 2. import into non-Unicode db path exits 0 and creates the file.
+    let (code, _, _) = run_os(&[
+        exports.as_os_str(),
+        OsStr::new("--ggpoker-currency"),
+        OsStr::new("CAD"),
+        OsStr::new("--db"),
+        db_path.as_os_str(),
+    ]);
+    assert_eq!(code, 0);
+    assert!(db_path.exists());
+
+    // 3. non-Unicode value for text option --report exits 2 (usage error).
+    let invalid_report = OsStr::from_bytes(b"r\xE9sults");
+    let (code, _, _) = run_os(&[
+        OsStr::new("--report"),
+        invalid_report,
+        OsStr::new("--db"),
+        db_path.as_os_str(),
+    ]);
+    assert_eq!(code, 2);
+}

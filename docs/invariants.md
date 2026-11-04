@@ -168,7 +168,8 @@ lifecycle contract is `docs/SPEC_v3.7.md` §2 and the report contract §6.
   transaction, re-reading the version under the lock so concurrent opens rebuild once.
   `rebuilt_on_open()` reports it. `rebuild_derived()` (CLI `--rebuild-stats`) rebuilds
   unconditionally.
-- **Unloadable hand.** If a stored hand cannot be loaded, the rebuild and the open fail with
+- **Unloadable hand.** If a stored hand cannot be loaded or an error occurs while processing a
+  hand during cache rebuild (e.g. `MissingPlayerId`), the rebuild and open fail with
   `StorageError::DerivedRebuildFailed { platform, site_hand_id, source }` (stored text, so it
   names the hand even when the platform column is the corrupt value) and nothing changes.
 - **Version guard.** `insert_hands_batch` and `insert_sourced_hands_batch` re-read
@@ -214,26 +215,32 @@ lifecycle contract is `docs/SPEC_v3.7.md` §2 and the report contract §6.
 
 - `blinds_posted_micros` sums the player's `PostSmallBlind`, `PostBigBlind` and `PostDeadBlind`
   amounts; `straddles_posted_micros` sums their `PostStraddle` amounts.
+- **Fail-closed policy.** An amount that cannot be represented in micro-units, or a sum that
+  overflows, never becomes a plausible value. Blind or straddle sums that overflow make that
+  column `0`.
 - **Contributed method.** `rake_attributed_micros` splits the hand's `Rake` deductions, and
   `fees_attributed_micros` one sum of all its other deductions (`Jackpot` and `Other`), among all
   players in proportion to `invested`.
 - **Largest remainder.** Each player gets `floor(T × invested / W)` (`W` = the invested total =
-  `total_pot`), with `i128` products; the leftover micro-units go one each to the largest
+  `total_pot`), with `i128` products and weights and parts summed in `i128` (negative weights
+  clamped to 0 in products and sum); the leftover micro-units go one each to the largest
   remainders `(T × invested) mod W`, ties to the lower seat number. The parts sum exactly to the
   hand's `Rake` and to its other deductions (a corpus test checks every hand). If `T` or `W` is
   `0`, every part is `0`.
 
 ### All-in equity (`docs/stats.md` §6.2)
 
-- **Qualification.** A hand qualifies for all-in equity when all four conditions hold:
+- **Qualification and fail-closed policy.** A hand qualifies for all-in equity when all four
+  conditions hold:
   1. at least two players are live (not folded) at the end;
   2. the last action that is not an `UncalledBetReturned` is on the preflop, flop or turn (the
      **all-in street**; cards were still to come);
   3. every live player's two hole cards are known;
   4. every live player has the same live contribution (`invested` minus their `PostDeadBlind`
      amounts): a single pot. Multiway all-ins with side pots are excluded.
-  When any condition fails, the hand does not qualify (`ev_qualified = 0`, equity `0/1`,
-  `ev_net_micros = net_micros`).
+  When any condition fails, or if amounts cannot be represented in micro-units or overflow during
+  pot or deduction conversion, the hand fails closed and does not qualify (`ev_qualified = 0`,
+  equity `0/1`, `ev_net_micros = net_micros`).
 - **Board and deck rule.** Equity enumerates every completion of the board cards dealt by the
   all-in street (preflop: 0; flop: 3; turn: 4; for multi-run hands, the first run's cards up to
   that street). Only the board cards and the **live players'** hole cards are removed from the
@@ -258,9 +265,15 @@ lifecycle contract is `docs/SPEC_v3.7.md` §2 and the report contract §6.
   from SQLite, and nothing is divided in SQL. Ratios are computed with `Decimal`. Percents,
   factors, `bb_won`, `bb/100` and `$/100` are rounded half-even to 2 decimals and printed with 2;
   money is printed exactly, trailing zeros removed; a zero denominator prints an empty cell.
-- **`bb_won`** sums the net per big-blind value, divides once per value with `Decimal`, and adds
-  the quotients (`docs/stats.md` §6.1), in every report and row, `ALL` rows included. It is never
-  `Σ net / Σ big_blind`, and never divided hand by hand.
+- **`bb_won` and rate aggregation.** `bb_won` is the exact rational `Σ_g net_g / bb_g` over the
+  row's big-blind values `g` (integers in micro-units), dividing once per big-blind value.
+  `bb/100` is exactly `100 × bb_won / hands`. `ev_bb_per_100` uses the same rational aggregation
+  with `ev_net_micros`. Each is computed using checked `i128` fractions; if arithmetic overflows,
+  the report fails closed with `ReportError::ArithmeticOverflow { figure }`. Printed figures round
+  half-even to 2 decimal places (`0.00`, never `-0.00`).
+- **CSV quoting.** Text fields (`currency`, `stakes`, `platform`, `table`, `position`, `stat`)
+  are quoted per RFC 4180 when they contain `,`, `"`, CR or LF (quotes doubled); other fields
+  remain unquoted.
 - **Stakes selection.** Each `--stakes` amount is a positive plain decimal: ASCII digits with at
   most one `.`, which has digits on both sides, at most 6 decimal places, surrounding spaces
   ignored. Amounts are compared numerically with the stored blinds in every currency. A repeated

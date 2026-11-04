@@ -718,3 +718,193 @@ fn report_kinds_parse_from_their_cli_names() {
     }
     assert!(ReportKind::from_str("summary").is_err());
 }
+
+fn make_hu_hand(
+    id: &str,
+    sb: Decimal,
+    bb: Decimal,
+    x: Decimal,
+    hero_cards: (&str, &str),
+    villain_cards: (&str, &str),
+    hero_wins: bool,
+) -> CanonicalHand {
+    let card = |s: &str| Card::from_str(s).unwrap();
+    let mut p = vec![
+        make_player(1, "Hero", dec!(100), true),
+        make_player(2, "Villain", dec!(100), false),
+    ];
+    p[0].hole_cards = [Some(card(hero_cards.0)), Some(card(hero_cards.1))];
+    p[1].hole_cards = [Some(card(villain_cards.0)), Some(card(villain_cards.1))];
+    let act = |seq, street, who, kind, amount, total, all_in| {
+        make_action(seq, street, who, kind, amount, total, all_in)
+    };
+    let pot = (bb + x) * dec!(2);
+    let a = vec![
+        act(
+            0,
+            Street::Preflop,
+            "Hero",
+            ActionType::PostSmallBlind,
+            sb,
+            sb,
+            false,
+        ),
+        act(
+            1,
+            Street::Preflop,
+            "Villain",
+            ActionType::PostBigBlind,
+            bb,
+            bb,
+            false,
+        ),
+        act(
+            2,
+            Street::Preflop,
+            "Hero",
+            ActionType::Call,
+            bb - sb,
+            bb,
+            false,
+        ),
+        act(
+            3,
+            Street::Preflop,
+            "Villain",
+            ActionType::Check,
+            Decimal::ZERO,
+            bb,
+            false,
+        ),
+        act(
+            4,
+            Street::Flop,
+            "Villain",
+            ActionType::Check,
+            Decimal::ZERO,
+            Decimal::ZERO,
+            false,
+        ),
+        act(5, Street::Flop, "Hero", ActionType::Bet, x, x, false),
+        act(6, Street::Flop, "Villain", ActionType::Call, x, x, false),
+        act(
+            7,
+            Street::Turn,
+            "Villain",
+            ActionType::Check,
+            Decimal::ZERO,
+            Decimal::ZERO,
+            false,
+        ),
+        act(
+            8,
+            Street::Turn,
+            "Hero",
+            ActionType::Check,
+            Decimal::ZERO,
+            Decimal::ZERO,
+            false,
+        ),
+        act(
+            9,
+            Street::River,
+            "Villain",
+            ActionType::Check,
+            Decimal::ZERO,
+            Decimal::ZERO,
+            false,
+        ),
+        act(
+            10,
+            Street::River,
+            "Hero",
+            ActionType::Check,
+            Decimal::ZERO,
+            Decimal::ZERO,
+            false,
+        ),
+    ];
+    let board = CommunityCards {
+        run_index: 0,
+        flop: Some([card("2c"), card("7d"), card("9h")]),
+        turn: Some(card("Ks")),
+        river: Some(card("3s")),
+    };
+    let winner_name = if hero_wins { "Hero" } else { "Villain" };
+    let mut h = make_canonical_hand(1, p, a, vec![board], vec![(winner_name, pot)]);
+    h.header.site_hand_id = id.to_string();
+    h.header.small_blind = sb;
+    h.header.big_blind = bb;
+    h.outcome.total_pot = pot;
+    h
+}
+
+#[test]
+fn bb_won_aggregation_exact_rational_results_positions_sessions() {
+    let l1 = make_hu_hand(
+        "L1",
+        dec!(1.5),
+        dec!(3),
+        dec!(26.99),
+        ("Ah", "Ad"),
+        ("Kh", "Kd"),
+        false,
+    );
+    let w1 = make_hu_hand(
+        "W1",
+        dec!(3),
+        dec!(6),
+        dec!(17.59),
+        ("Kh", "Kd"),
+        ("Ah", "Ad"),
+        true,
+    );
+
+    let temp_db = NamedTempFile::new().unwrap();
+    let mut repo = SqliteRepository::open(temp_db.path()).unwrap();
+    let stored = repo.insert_hands_batch(&[l1, w1]).unwrap();
+    assert!(stored.rejected.is_empty(), "{:?}", stored.rejected);
+
+    assert_eq!(
+        report_text(&repo, ReportKind::Results, &ReportOptions::default()),
+        "currency,stakes,hands,net,net_per_100,bb_won,bb_per_100,rake,fees,blinds,straddles,allin_hands,ev_net,ev_bb_per_100\n\
+         CAD,1.5/3,1,-29.99,-2999.00,-10.00,-999.67,0,0,1.5,0,0,-29.99,-999.67\n\
+         CAD,3/6,1,23.59,2359.00,3.93,393.17,0,0,3,0,0,23.59,393.17\n\
+         CAD,ALL,2,-6.4,-320.00,-6.06,-303.25,0,0,4.5,0,0,-6.4,-303.25\n"
+    );
+
+    assert_eq!(
+        report_text(&repo, ReportKind::Positions, &ReportOptions::default()),
+        "currency,position,hands,net,bb_per_100,vpip,pfr,rfi\n\
+         CAD,SB,2,-6.4,-303.25,100.00,0.00,0.00\n"
+    );
+
+    assert_eq!(
+        report_text(&repo, ReportKind::Sessions, &ReportOptions::default()),
+        "currency,platform,table,start,end,duration_seconds,hands,net,bb_per_100,ev_net\n\
+         CAD,GGPoker,TestTable,2026-08-21T17:00:00,2026-08-21T17:00:00,0,2,-6.4,-303.25,-6.4\n"
+    );
+}
+
+#[test]
+fn csv_text_fields_quoted_when_needed() {
+    let mut h = make_hu_hand(
+        "Q1",
+        dec!(0.05),
+        dec!(0.10),
+        dec!(1.00),
+        ("Ah", "Ad"),
+        ("Kh", "Kd"),
+        true,
+    );
+    h.header.table_name = "Table, \"A\"".to_string();
+    let temp_db = NamedTempFile::new().unwrap();
+    let mut repo = SqliteRepository::open(temp_db.path()).unwrap();
+    repo.insert_hands_batch(&[h]).unwrap();
+
+    let text = report_text(&repo, ReportKind::Sessions, &ReportOptions::default());
+    assert!(
+        text.contains("CAD,GGPoker,\"Table, \"\"A\"\"\","),
+        "expected quoted table name in sessions report, got:\n{text}"
+    );
+}

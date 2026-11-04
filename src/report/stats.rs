@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use rusqlite::Transaction;
 
-use super::format::{format_factor, format_pct};
+use super::format::{format_factor, format_pct, quote_csv_text};
 use super::{ReportError, Stakes};
 
 pub const STATS_HEADER: &str = "currency,stat,numerator,denominator,value";
@@ -23,7 +23,11 @@ impl StatsRow {
     pub fn to_csv_line(&self) -> String {
         format!(
             "{},{},{},{},{}",
-            self.currency, self.stat, self.numerator, self.denominator, self.value
+            quote_csv_text(&self.currency),
+            quote_csv_text(&self.stat),
+            self.numerator,
+            self.denominator,
+            self.value
         )
     }
 }

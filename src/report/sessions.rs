@@ -4,9 +4,8 @@ use std::collections::BTreeMap;
 
 use chrono::{NaiveDateTime, TimeDelta};
 use rusqlite::Transaction;
-use rust_decimal::Decimal;
 
-use super::format::{format_exact_money, format_fixed2};
+use super::format::{format_exact_money, quote_csv_text};
 use super::{BbWon, ReportError, Stakes};
 use crate::storage::StorageError;
 use crate::storage::repository::TIMESTAMP_FORMAT;
@@ -36,9 +35,9 @@ impl SessionsRow {
     pub fn to_csv_line(&self) -> String {
         format!(
             "{},{},{},{},{},{},{},{},{},{}",
-            self.currency,
-            self.platform,
-            self.table,
+            quote_csv_text(&self.currency),
+            quote_csv_text(&self.platform),
+            quote_csv_text(&self.table),
             self.start,
             self.end,
             self.duration_seconds,
@@ -221,10 +220,19 @@ pub(crate) fn build_sessions_rows(
         });
     }
 
-    Ok(group_sessions(hands)
-        .iter()
-        .filter_map(|session| session_row(session))
-        .collect())
+    let mut rows = Vec::new();
+    for session in group_sessions(hands) {
+        let mut bb_won = BbWon::default();
+        for (_, hand) in &session {
+            bb_won.add(hand.big_blind_micros, hand.net_micros);
+        }
+        let hands = i64::try_from(session.len()).unwrap_or(i64::MAX);
+        bb_won.format_bb_per_100(hands, "bb_per_100")?;
+        if let Some(r) = session_row(&session) {
+            rows.push(r);
+        }
+    }
+    Ok(rows)
 }
 
 /// One session's CSV row (`None` only for an empty session, which `group_sessions` never makes).
@@ -239,7 +247,9 @@ fn session_row(session: &[TimedHand]) -> Option<SessionsRow> {
         bb_won.add(hand.big_blind_micros, hand.net_micros);
     }
     let hands = i64::try_from(session.len()).unwrap_or(i64::MAX);
-    let bb_per_100_dec = (bb_won.total() / Decimal::from(hands)) * Decimal::from(100);
+    let bb_per_100 = bb_won
+        .format_bb_per_100(hands, "bb_per_100")
+        .unwrap_or_else(|_| "0.00".to_string());
 
     Some(SessionsRow {
         currency: first.currency.clone(),
@@ -250,7 +260,7 @@ fn session_row(session: &[TimedHand]) -> Option<SessionsRow> {
         duration_seconds: duration_seconds(session),
         hands,
         net: format_exact_money(total_net),
-        bb_per_100: format_fixed2(bb_per_100_dec),
+        bb_per_100,
         ev_net: format_exact_money(total_ev_net),
     })
 }

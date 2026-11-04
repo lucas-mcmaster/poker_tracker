@@ -127,10 +127,18 @@ pub struct IngestionReport {
 }
 
 impl IngestionReport {
-    fn new() -> Self {
+    /// Creates a new ingestion report with the current time.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::new_at(Utc::now())
+    }
+
+    /// Creates a new ingestion report with the given start time.
+    #[must_use]
+    pub fn new_at(started_at: DateTime<Utc>) -> Self {
         Self {
             batch_run_id: Uuid::now_v7(),
-            started_at: Utc::now(),
+            started_at,
             files_processed: 0,
             files_by_parser: BTreeMap::new(),
             hands_ingested: 0,
@@ -155,6 +163,12 @@ impl IngestionReport {
     }
 }
 
+impl Default for IngestionReport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Where a buffered hand came from, for diagnostics, provenance and quarantine.
 #[derive(Debug, Clone)]
 struct Origin {
@@ -171,7 +185,6 @@ struct Pending {
     hands: Vec<CanonicalHand>,
     origins: Vec<Origin>,
     quarantine: Vec<QuarantinedHand>,
-    run_registered: bool,
 }
 
 impl Pending {
@@ -230,11 +243,6 @@ impl DirectoryIngester {
             source,
             partial_report: Box::new(report.clone()),
         };
-        if !pending.run_registered {
-            repo.register_import_run(report.batch_run_id, report.started_at)
-                .map_err(|e| fail(e, report))?;
-            pending.run_registered = true;
-        }
         let sources: Vec<HandSource> = pending
             .origins
             .iter()
@@ -246,7 +254,7 @@ impl DirectoryIngester {
             })
             .collect();
         let stats = repo
-            .insert_sourced_hands_batch(&pending.hands, &sources)
+            .insert_sourced_hands_batch_at(&pending.hands, &sources, Some(report.started_at))
             .map_err(|e| fail(e, report))?;
         report.hands_ingested += stats.hands_inserted;
         report.duplicates_skipped += stats.duplicates_skipped;
@@ -266,7 +274,7 @@ impl DirectoryIngester {
             report.record_failure(failure);
         }
         report.hands_quarantined += repo
-            .quarantine_hands(&pending.quarantine)
+            .quarantine_hands_at(&pending.quarantine, Some(report.started_at))
             .map_err(|e| fail(e, report))?;
         pending.hands.clear();
         pending.origins.clear();
@@ -289,7 +297,22 @@ impl DirectoryIngester {
         registry: &ParserRegistry,
         repo: &mut SqliteRepository,
     ) -> Result<IngestionReport, PipelineError> {
-        let mut report = IngestionReport::new();
+        self.ingest_directory_at(root_dir, registry, repo, Utc::now())
+    }
+
+    /// Recursively discovers `.txt` files under `root_dir` (following symbolic links) and
+    /// processes them in sorted path order, recording `started_at` as the import run start time.
+    ///
+    /// # Errors
+    /// As [`Self::ingest_directory`].
+    pub fn ingest_directory_at<P: AsRef<Path>>(
+        &self,
+        root_dir: P,
+        registry: &ParserRegistry,
+        repo: &mut SqliteRepository,
+        started_at: DateTime<Utc>,
+    ) -> Result<IngestionReport, PipelineError> {
+        let mut report = IngestionReport::new_at(started_at);
         let root = std::path::absolute(root_dir.as_ref())
             .unwrap_or_else(|_| root_dir.as_ref().to_path_buf());
         let mut txt_files: Vec<PathBuf> = Vec::new();

@@ -178,7 +178,7 @@ pub struct BatchInsertStats {
 pub struct DeletedImportRun {
     /// Hands that no other import run contained, deleted with all their rows.
     pub hands_deleted: usize,
-    /// Hands this run contained that another import run also contained; they are kept.
+    /// Hands this run contained that another import run also contained or that were stored without a source; they are kept.
     pub hands_kept: usize,
     /// Quarantined hands recorded by this run.
     pub quarantined_deleted: usize,
@@ -595,20 +595,37 @@ fn rebuild_derived_in_tx(conn: &Connection) -> Result<DerivedRebuild, StorageErr
             }
         };
 
-        let mut p_stmt = conn.prepare_cached(
-            "SELECT p.screen_name, hp.player_id FROM hand_players hp
-             JOIN players p ON p.id = hp.player_id WHERE hp.hand_id = ?1",
-        )?;
+        let wrap_err = |e: StorageError| StorageError::DerivedRebuildFailed {
+            platform: platform_str.clone(),
+            site_hand_id: site_hand_id_str.clone(),
+            source: Box::new(e),
+        };
+
+        let mut p_stmt = conn
+            .prepare_cached(
+                "SELECT p.screen_name, hp.player_id FROM hand_players hp
+                 JOIN players p ON p.id = hp.player_id WHERE hp.hand_id = ?1",
+            )
+            .map_err(StorageError::from)
+            .map_err(wrap_err)?;
         let p_rows: Vec<(String, i64)> = p_stmt
-            .query_map(params![hand_id], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<Result<_, _>>()?;
+            .query_map(params![hand_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(StorageError::from)
+            .map_err(wrap_err)?
+            .collect::<Result<_, _>>()
+            .map_err(StorageError::from)
+            .map_err(wrap_err)?;
         let p_map: HashMap<String, i64> = p_rows.into_iter().collect();
 
         let derived = crate::stats::derive_hand_stats(&hand);
         for st in &derived {
-            if let Some(&pid) = p_map.get(&st.player_name) {
-                insert_player_stats(conn, hand_id, pid, st)?;
-            }
+            let pid = p_map.get(&st.player_name).copied().ok_or_else(|| {
+                wrap_err(StorageError::MissingPlayerId {
+                    hand_id: site_hand_id_str.clone(),
+                    player_name: st.player_name.clone(),
+                })
+            })?;
+            insert_player_stats(conn, hand_id, pid, st).map_err(wrap_err)?;
         }
     }
 
@@ -623,6 +640,27 @@ fn rebuild_derived_in_tx(conn: &Connection) -> Result<DerivedRebuild, StorageErr
         hands: count,
         version: crate::stats::STATS_VERSION,
     })
+}
+
+pub(crate) fn rebuild_if_stale(
+    conn: &mut Connection,
+) -> Result<Option<DerivedRebuild>, StorageError> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let locked_version: Option<i64> = tx
+        .query_row(
+            "SELECT version FROM derived_cache WHERE name = 'hand_player_stats'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if locked_version != Some(crate::stats::STATS_VERSION) {
+        let rebuild = rebuild_derived_in_tx(&tx)?;
+        tx.commit()?;
+        Ok(Some(rebuild))
+    } else {
+        tx.commit()?;
+        Ok(None)
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1048,21 +1086,7 @@ impl SqliteRepository {
             .optional()?;
         let mut rebuilt_on_open = None;
         if cached_version != Some(crate::stats::STATS_VERSION) {
-            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let locked_version: Option<i64> = tx
-                .query_row(
-                    "SELECT version FROM derived_cache WHERE name = 'hand_player_stats'",
-                    [],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if locked_version != Some(crate::stats::STATS_VERSION) {
-                let rebuild = rebuild_derived_in_tx(&tx)?;
-                tx.commit()?;
-                rebuilt_on_open = Some(rebuild);
-            } else {
-                tx.commit()?;
-            }
+            rebuilt_on_open = rebuild_if_stale(&mut conn)?;
         }
 
         Ok(Self {
@@ -1227,7 +1251,7 @@ impl SqliteRepository {
         &mut self,
         hands: &[CanonicalHand],
     ) -> Result<BatchInsertStats, StorageError> {
-        self.insert_batch(hands, None)
+        self.insert_batch(hands, None, None)
     }
 
     /// Validates and inserts a slice of hands (from any site, in any currency) in one SQLite
@@ -1254,19 +1278,34 @@ impl SqliteRepository {
         hands: &[CanonicalHand],
         sources: &[HandSource],
     ) -> Result<BatchInsertStats, StorageError> {
+        self.insert_sourced_hands_batch_at(hands, sources, None)
+    }
+
+    /// Validates and inserts a slice of hands in one SQLite transaction, recording provenance and
+    /// registering referenced import runs with `started_at` (or current time if `None`).
+    ///
+    /// # Errors
+    /// As [`Self::insert_sourced_hands_batch`].
+    pub fn insert_sourced_hands_batch_at(
+        &mut self,
+        hands: &[CanonicalHand],
+        sources: &[HandSource],
+        started_at: Option<DateTime<Utc>>,
+    ) -> Result<BatchInsertStats, StorageError> {
         if hands.len() != sources.len() {
             return Err(StorageError::SourceCountMismatch {
                 hands: hands.len(),
                 sources: sources.len(),
             });
         }
-        self.insert_batch(hands, Some(sources))
+        self.insert_batch(hands, Some(sources), started_at)
     }
 
     fn insert_batch(
         &mut self,
         hands: &[CanonicalHand],
         sources: Option<&[HandSource]>,
+        started_at: Option<DateTime<Utc>>,
     ) -> Result<BatchInsertStats, StorageError> {
         let tx = self
             .conn
@@ -1296,9 +1335,13 @@ impl SqliteRepository {
             .collect();
         runs.sort_unstable();
         runs.dedup();
-        let now = now_utc();
+        let default_time = now_utc();
+        let run_started = match started_at {
+            Some(dt) => dt.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            None => default_time,
+        };
         for run in runs {
-            register_run(&tx, run, &now)?;
+            register_run(&tx, run, &run_started)?;
         }
 
         for (batch_index, hand) in hands.iter().enumerate() {
@@ -1341,16 +1384,33 @@ impl SqliteRepository {
     /// # Errors
     /// Returns [`StorageError::Sqlite`] if the transaction fails; nothing is stored then.
     pub fn quarantine_hands(&mut self, hands: &[QuarantinedHand]) -> Result<usize, StorageError> {
+        self.quarantine_hands_at(hands, None)
+    }
+
+    /// Stores rejected hands with their raw text, registering the referenced import run with
+    /// `started_at` (or current time if `None`).
+    ///
+    /// # Errors
+    /// As [`Self::quarantine_hands`].
+    pub fn quarantine_hands_at(
+        &mut self,
+        hands: &[QuarantinedHand],
+        started_at: Option<DateTime<Utc>>,
+    ) -> Result<usize, StorageError> {
         if hands.is_empty() {
             return Ok(0);
         }
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let now = now_utc();
+        let default_time = now_utc();
+        let run_started = match started_at {
+            Some(dt) => dt.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            None => default_time,
+        };
         let mut added = 0;
         for q in hands {
-            register_run(&tx, q.import_run_id, &now)?;
+            register_run(&tx, q.import_run_id, &run_started)?;
             added += tx
                 .prepare_cached(
                     r"
@@ -1375,5 +1435,39 @@ impl SqliteRepository {
         }
         tx.commit()?;
         Ok(added)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn rebuild_if_stale_skips_rebuild_when_locked_version_is_current() {
+        let mut repo = SqliteRepository::open_in_memory().unwrap();
+        let built_at: String = repo
+            .conn
+            .query_row(
+                "SELECT built_at FROM derived_cache WHERE name = 'hand_player_stats'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        // An open whose unlocked read saw a stale version, but whose locked read sees
+        // STATS_VERSION, does not rebuild: Ok(None) returned, built_at unchanged.
+        let result = rebuild_if_stale(&mut repo.conn).unwrap();
+        assert_eq!(result, None);
+
+        let built_at_after: String = repo
+            .conn
+            .query_row(
+                "SELECT built_at FROM derived_cache WHERE name = 'hand_player_stats'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(built_at, built_at_after);
     }
 }

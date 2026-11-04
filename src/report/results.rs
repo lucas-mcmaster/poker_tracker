@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use rusqlite::Transaction;
 use rust_decimal::Decimal;
 
-use super::format::{format_exact_money, format_fixed2};
+use super::format::{format_exact_money, format_fixed2, quote_csv_text};
 use super::{BbWon, ReportError, Stakes};
 
 pub const RESULTS_HEADER: &str = "currency,stakes,hands,net,net_per_100,bb_won,bb_per_100,rake,fees,blinds,straddles,allin_hands,ev_net,ev_bb_per_100";
@@ -33,8 +33,8 @@ impl ResultsRow {
     pub fn to_csv_line(&self) -> String {
         format!(
             "{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
-            self.currency,
-            self.stakes,
+            quote_csv_text(&self.currency),
+            quote_csv_text(&self.stakes),
             self.hands,
             self.net,
             self.net_per_100,
@@ -154,15 +154,17 @@ pub(crate) fn build_results_rows(
 
             let net_dec = Decimal::new(g.net_micros, 6);
             let net_per_100_dec = (net_dec / Decimal::from(g.hands)) * Decimal::from(100);
-            let bb_won_dec = Decimal::from(g.net_micros) / Decimal::from(g.big_blind_micros);
+
+            let mut row_bb_won = BbWon::default();
+            row_bb_won.add(g.big_blind_micros, g.net_micros);
+            let bb_won_str = row_bb_won.format_bb_won("bb_won")?;
+            let bb_per_100_str = row_bb_won.format_bb_per_100(g.hands, "bb_per_100")?;
             total_bb_won.add(g.big_blind_micros, g.net_micros);
 
-            let bb_per_100_dec = (bb_won_dec / Decimal::from(g.hands)) * Decimal::from(100);
-
-            let ev_bb_won_dec = Decimal::from(g.ev_net_micros) / Decimal::from(g.big_blind_micros);
+            let mut row_ev_bb_won = BbWon::default();
+            row_ev_bb_won.add(g.big_blind_micros, g.ev_net_micros);
+            let ev_bb_per_100_str = row_ev_bb_won.format_bb_per_100(g.hands, "ev_bb_per_100")?;
             total_ev_bb_won.add(g.big_blind_micros, g.ev_net_micros);
-
-            let ev_bb_per_100_dec = (ev_bb_won_dec / Decimal::from(g.hands)) * Decimal::from(100);
 
             let stakes_str = Stakes {
                 small_blind_micros: g.small_blind_micros,
@@ -176,28 +178,25 @@ pub(crate) fn build_results_rows(
                 hands: g.hands,
                 net: format_exact_money(g.net_micros),
                 net_per_100: format_fixed2(net_per_100_dec),
-                bb_won: format_fixed2(bb_won_dec),
-                bb_per_100: format_fixed2(bb_per_100_dec),
+                bb_won: bb_won_str,
+                bb_per_100: bb_per_100_str,
                 rake: format_exact_money(g.rake_micros),
                 fees: format_exact_money(g.fees_micros),
                 blinds: format_exact_money(g.blinds_micros),
                 straddles: format_exact_money(g.straddles_micros),
                 allin_hands: g.allin_hands,
                 ev_net: format_exact_money(g.ev_net_micros),
-                ev_bb_per_100: format_fixed2(ev_bb_per_100_dec),
+                ev_bb_per_100: ev_bb_per_100_str,
             });
         }
 
         if groups.len() > 1 && total_hands > 0 {
             let net_dec = Decimal::new(total_net, 6);
             let net_per_100_dec = (net_dec / Decimal::from(total_hands)) * Decimal::from(100);
-            let total_bb_won_dec = total_bb_won.total();
-            let bb_per_100_dec =
-                (total_bb_won_dec / Decimal::from(total_hands)) * Decimal::from(100);
-
-            let total_ev_bb_won_dec = total_ev_bb_won.total();
-            let ev_bb_per_100_dec =
-                (total_ev_bb_won_dec / Decimal::from(total_hands)) * Decimal::from(100);
+            let total_bb_won_str = total_bb_won.format_bb_won("bb_won")?;
+            let bb_per_100_str = total_bb_won.format_bb_per_100(total_hands, "bb_per_100")?;
+            let ev_bb_per_100_str =
+                total_ev_bb_won.format_bb_per_100(total_hands, "ev_bb_per_100")?;
 
             result_rows.push(ResultsRow {
                 currency,
@@ -205,15 +204,15 @@ pub(crate) fn build_results_rows(
                 hands: total_hands,
                 net: format_exact_money(total_net),
                 net_per_100: format_fixed2(net_per_100_dec),
-                bb_won: format_fixed2(total_bb_won_dec),
-                bb_per_100: format_fixed2(bb_per_100_dec),
+                bb_won: total_bb_won_str,
+                bb_per_100: bb_per_100_str,
                 rake: format_exact_money(total_rake),
                 fees: format_exact_money(total_fees),
                 blinds: format_exact_money(total_blinds),
                 straddles: format_exact_money(total_straddles),
                 allin_hands: total_allin_hands,
                 ev_net: format_exact_money(total_ev_net),
-                ev_bb_per_100: format_fixed2(ev_bb_per_100_dec),
+                ev_bb_per_100: ev_bb_per_100_str,
             });
         }
     }

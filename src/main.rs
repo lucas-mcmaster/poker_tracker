@@ -10,11 +10,12 @@
 //! The parser for each file is detected automatically.
 //!
 //! Exit codes: `0` success (and `--help`), `1` fatal error, `2` usage error (including a missing
-//! input directory), `3` import completed but some files or hands were rejected.
+//! input directory), `3` completed with rejected files or hands, or no `.txt` files found.
 
 use std::env;
+use std::ffi::OsString;
 use std::io::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use poker_tracker::domain::CurrencyCode;
@@ -42,17 +43,18 @@ Site options (enable at least one when importing; each at most once):
 Other options:
   --db <path>                 SQLite database (default: poker_tracker.sqlite)
   --delete-run <RUN-ID>       Undo an import (the Batch Run ID printed by that import). Hands
-                              that another import also contained are kept.
+                              that another import also contained (or that were stored without
+                              a source) are kept.
   --rebuild-stats             Rebuild the derived statistics cache for all hands
   --report <KIND>             Report kind: results, positions, sessions, or stats
   --stakes <LIST>             Comma-separated list of stakes to include (e.g. 0.05/0.1,0.1/0.2)
   --out <PATH>                Output file (default: stdout)
 
-Exit codes: 0 success, 1 fatal error, 2 usage error, 3 some files or hands were rejected.";
+Exit codes: 0 success, 1 fatal error, 2 usage error, 3 completed with rejected files or hands, or no .txt files found.";
 
 enum Command {
     Import {
-        input_dir: String,
+        input_dir: PathBuf,
         registry: ParserRegistry,
     },
     DeleteRun(Uuid),
@@ -60,12 +62,12 @@ enum Command {
     Report {
         kind: ReportKind,
         stakes: Option<Vec<Stakes>>,
-        out_path: Option<String>,
+        out_path: Option<PathBuf>,
     },
 }
 
 struct CliArgs {
-    db_path: String,
+    db_path: PathBuf,
     command: Command,
 }
 
@@ -74,8 +76,8 @@ enum Parsed {
     Help,
 }
 
-fn take_value(
-    args: &mut impl Iterator<Item = String>,
+fn take_text_value(
+    args: &mut impl Iterator<Item = OsString>,
     flag: &str,
     seen: &mut Vec<String>,
 ) -> Result<String, String> {
@@ -83,13 +85,31 @@ fn take_value(
         return Err(format!("{flag} given more than once"));
     }
     seen.push(flag.to_string());
-    args.next()
-        .ok_or_else(|| format!("{flag} requires a value"))
+    let val = args
+        .next()
+        .ok_or_else(|| format!("{flag} requires a value"))?;
+    val.into_string()
+        .map_err(|_| format!("{flag} value is not valid Unicode"))
 }
 
-fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
-    let mut input_dir = None;
-    let mut db_path = "poker_tracker.sqlite".to_string();
+fn take_path_value(
+    args: &mut impl Iterator<Item = OsString>,
+    flag: &str,
+    seen: &mut Vec<String>,
+) -> Result<PathBuf, String> {
+    if seen.iter().any(|f| f == flag) {
+        return Err(format!("{flag} given more than once"));
+    }
+    seen.push(flag.to_string());
+    let val = args
+        .next()
+        .ok_or_else(|| format!("{flag} requires a value"))?;
+    Ok(PathBuf::from(val))
+}
+
+fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Parsed, String> {
+    let mut input_dir: Option<PathBuf> = None;
+    let mut db_path = PathBuf::from("poker_tracker.sqlite");
     let mut registry = ParserRegistry::new();
     let mut delete_run = None;
     let mut rebuild_stats = false;
@@ -98,59 +118,62 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
     let mut out_path = None;
     let mut seen: Vec<String> = Vec::new();
     let mut args = args;
+
     while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--db" => db_path = take_value(&mut args, "--db", &mut seen)?,
-            "--ggpoker-currency" => {
-                let raw = take_value(&mut args, "--ggpoker-currency", &mut seen)?;
-                let currency: CurrencyCode = raw
-                    .to_ascii_uppercase()
-                    .parse()
-                    .map_err(|e| format!("{e}"))?;
-                registry.register(GgPokerParser::new(currency));
+        if arg == "--db" {
+            db_path = take_path_value(&mut args, "--db", &mut seen)?;
+        } else if arg == "--ggpoker-currency" {
+            let raw = take_text_value(&mut args, "--ggpoker-currency", &mut seen)?;
+            let currency: CurrencyCode = raw
+                .to_ascii_uppercase()
+                .parse()
+                .map_err(|e| format!("{e}"))?;
+            registry.register(GgPokerParser::new(currency));
+        } else if arg == "--delete-run" {
+            let raw = take_text_value(&mut args, "--delete-run", &mut seen)?;
+            let id = Uuid::parse_str(&raw).map_err(|e| format!("invalid run id: {e}"))?;
+            delete_run = Some(id);
+        } else if arg == "--rebuild-stats" {
+            if seen.iter().any(|f| f == "--rebuild-stats") {
+                return Err("--rebuild-stats given more than once".to_string());
             }
-            "--delete-run" => {
-                let raw = take_value(&mut args, "--delete-run", &mut seen)?;
-                let id = Uuid::parse_str(&raw).map_err(|e| format!("invalid run id: {e}"))?;
-                delete_run = Some(id);
+            seen.push("--rebuild-stats".to_string());
+            rebuild_stats = true;
+        } else if arg == "--report" {
+            let raw = take_text_value(&mut args, "--report", &mut seen)?;
+            let kind = raw.parse::<ReportKind>().map_err(|e| e.to_string())?;
+            report_kind = Some(kind);
+        } else if arg == "--stakes" {
+            let raw = take_text_value(&mut args, "--stakes", &mut seen)?;
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Err("malformed --stakes: empty list".to_string());
             }
-            "--rebuild-stats" => {
-                if seen.iter().any(|f| f == "--rebuild-stats") {
-                    return Err("--rebuild-stats given more than once".to_string());
-                }
-                seen.push("--rebuild-stats".to_string());
-                rebuild_stats = true;
+            let raw_items: Vec<&str> = trimmed.split(',').collect();
+            if raw_items.is_empty() || raw_items.iter().any(|item| item.trim().is_empty()) {
+                return Err("malformed --stakes list".to_string());
             }
-            "--report" => {
-                let raw = take_value(&mut args, "--report", &mut seen)?;
-                let kind = raw.parse::<ReportKind>().map_err(|e| e.to_string())?;
-                report_kind = Some(kind);
+            let mut parsed_stakes = Vec::new();
+            for item in raw_items {
+                let s = item.trim().parse::<Stakes>().map_err(|e| e.to_string())?;
+                parsed_stakes.push(s);
             }
-            "--stakes" => {
-                let raw = take_value(&mut args, "--stakes", &mut seen)?;
-                let trimmed = raw.trim();
-                if trimmed.is_empty() {
-                    return Err("malformed --stakes: empty list".to_string());
-                }
-                let raw_items: Vec<&str> = trimmed.split(',').collect();
-                if raw_items.is_empty() || raw_items.iter().any(|item| item.trim().is_empty()) {
-                    return Err("malformed --stakes list".to_string());
-                }
-                let mut parsed_stakes = Vec::new();
-                for item in raw_items {
-                    let s = item.trim().parse::<Stakes>().map_err(|e| e.to_string())?;
-                    parsed_stakes.push(s);
-                }
-                stakes = Some(parsed_stakes);
-            }
-            "--out" => {
-                let path = take_value(&mut args, "--out", &mut seen)?;
-                out_path = Some(path);
-            }
-            "-h" | "--help" => return Ok(Parsed::Help),
-            flag if flag.starts_with("--") => return Err(format!("unknown option '{flag}'")),
-            _ if input_dir.is_none() => input_dir = Some(arg),
-            _ => return Err(format!("unexpected argument '{arg}'")),
+            stakes = Some(parsed_stakes);
+        } else if arg == "--out" {
+            let path = take_path_value(&mut args, "--out", &mut seen)?;
+            out_path = Some(path);
+        } else if arg == "-h" || arg == "--help" {
+            return Ok(Parsed::Help);
+        } else if let Some(flag) = arg.to_str()
+            && flag.starts_with("--")
+        {
+            return Err(format!("unknown option '{flag}'"));
+        } else if arg.to_string_lossy().starts_with("--") {
+            return Err(format!("unknown option '{}'", arg.to_string_lossy()));
+        } else if input_dir.is_none() {
+            input_dir = Some(PathBuf::from(arg));
+        } else {
+            return Err(format!("unexpected argument '{}'", arg.to_string_lossy()));
         }
     }
 
@@ -184,25 +207,35 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
         return Err("--out requires --report".to_string());
     }
 
-    let command = match (rebuild_stats, delete_run, input_dir) {
-        (true, None, None) if registry.is_empty() => Command::RebuildStats,
-        (true, _, _) => {
-            return Err(
-                "--rebuild-stats cannot be combined with an input directory or --delete-run"
-                    .to_string(),
-            );
+    if rebuild_stats {
+        if !registry.is_empty() {
+            return Err("--rebuild-stats cannot be combined with --ggpoker-currency".to_string());
         }
-        (false, Some(run), None) if registry.is_empty() => Command::DeleteRun(run),
-        (false, Some(_), _) => {
+        if delete_run.is_some() {
+            return Err("--rebuild-stats cannot be combined with --delete-run".to_string());
+        }
+        if input_dir.is_some() {
+            return Err("--rebuild-stats cannot be combined with an input directory".to_string());
+        }
+        return Ok(Parsed::Run(CliArgs {
+            db_path,
+            command: Command::RebuildStats,
+        }));
+    }
+
+    let command = match (delete_run, input_dir) {
+        (Some(run), None) if registry.is_empty() => Command::DeleteRun(run),
+        (Some(_), _) => {
             return Err("--delete-run cannot be combined with an import".to_string());
         }
-        (false, None, Some(input_dir)) => {
+        (None, Some(input_dir)) => {
             if registry.is_empty() {
                 return Err("no site enabled; pass e.g. --ggpoker-currency CAD".to_string());
             }
-            if !Path::new(&input_dir).is_dir() {
+            if !input_dir.is_dir() {
                 return Err(format!(
-                    "input directory '{input_dir}' does not exist or is not a directory"
+                    "input directory '{}' does not exist or is not a directory",
+                    input_dir.display()
                 ));
             }
             Command::Import {
@@ -210,7 +243,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
                 registry,
             }
         }
-        (false, None, None) => return Err("missing <input-dir>".to_string()),
+        (None, None) => return Err("missing <input-dir>".to_string()),
     };
     Ok(Parsed::Run(CliArgs { db_path, command }))
 }
@@ -239,12 +272,15 @@ fn print_report(report: &IngestionReport) {
     }
 }
 
-fn delete_run(db_path: &str, run: Uuid) -> ExitCode {
+fn delete_run(db_path: &Path, run: Uuid) -> ExitCode {
     // Never create a database just to delete from it.
     let mut repo = match SqliteRepository::open_existing(db_path) {
         Ok(r) => r,
         Err(err) => {
-            eprintln!("Failed to open SQLite database at '{db_path}': {err}");
+            eprintln!(
+                "Failed to open SQLite database at '{}': {err}",
+                db_path.display()
+            );
             return ExitCode::from(1);
         }
     };
@@ -260,7 +296,7 @@ fn delete_run(db_path: &str, run: Uuid) -> ExitCode {
         Ok(deleted) => {
             println!(
                 "Deleted {} hand(s) from import run {run}; kept {} hand(s) that another import \
-                 also contained; removed {} quarantined hand(s)",
+                 also contained (or that were stored without a source); removed {} quarantined hand(s)",
                 deleted.hands_deleted, deleted.hands_kept, deleted.quarantined_deleted
             );
             ExitCode::SUCCESS
@@ -272,11 +308,14 @@ fn delete_run(db_path: &str, run: Uuid) -> ExitCode {
     }
 }
 
-fn rebuild_stats(db_path: &str) -> ExitCode {
+fn rebuild_stats(db_path: &Path) -> ExitCode {
     let mut repo = match SqliteRepository::open_existing(db_path) {
         Ok(r) => r,
         Err(err) => {
-            eprintln!("Failed to open SQLite database at '{db_path}': {err}");
+            eprintln!(
+                "Failed to open SQLite database at '{}': {err}",
+                db_path.display()
+            );
             return ExitCode::from(1);
         }
     };
@@ -297,11 +336,14 @@ fn rebuild_stats(db_path: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn import(db_path: &str, input_dir: &str, registry: &ParserRegistry) -> ExitCode {
+fn import(db_path: &Path, input_dir: &Path, registry: &ParserRegistry) -> ExitCode {
     let mut repo = match SqliteRepository::open(db_path) {
         Ok(r) => r,
         Err(err) => {
-            eprintln!("Failed to open SQLite database at '{db_path}': {err}");
+            eprintln!(
+                "Failed to open SQLite database at '{}': {err}",
+                db_path.display()
+            );
             return ExitCode::from(1);
         }
     };
@@ -334,15 +376,18 @@ fn import(db_path: &str, input_dir: &str, registry: &ParserRegistry) -> ExitCode
 }
 
 fn run_report(
-    db_path: &str,
+    db_path: &Path,
     kind: ReportKind,
     stakes: Option<Vec<Stakes>>,
-    out_path: Option<String>,
+    out_path: Option<PathBuf>,
 ) -> ExitCode {
     let repo = match SqliteRepository::open_existing(db_path) {
         Ok(r) => r,
         Err(err) => {
-            eprintln!("Failed to open SQLite database at '{db_path}': {err}");
+            eprintln!(
+                "Failed to open SQLite database at '{}': {err}",
+                db_path.display()
+            );
             return ExitCode::from(1);
         }
     };
@@ -371,7 +416,7 @@ fn run_report(
 
     if let Some(path) = out_path {
         if let Err(err) = std::fs::write(&path, &buf) {
-            eprintln!("Failed to write report to '{path}': {err}");
+            eprintln!("Failed to write report to '{}': {err}", path.display());
             return ExitCode::from(1);
         }
     } else if let Err(err) = std::io::stdout().write_all(&buf) {
@@ -383,7 +428,7 @@ fn run_report(
 }
 
 fn main() -> ExitCode {
-    let args = match parse_args(env::args().skip(1)) {
+    let args = match parse_args(env::args_os().skip(1)) {
         Ok(Parsed::Run(a)) => a,
         Ok(Parsed::Help) => {
             println!("{USAGE}");

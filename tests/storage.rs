@@ -1144,6 +1144,7 @@ fn a_stale_cache_import_quarantines_nothing_even_with_a_broken_hand() {
     );
     assert_eq!(scalar(&repo, "SELECT COUNT(*) FROM quarantined_hands"), 0);
     assert_eq!(scalar(&repo, "SELECT COUNT(*) FROM hands"), 0);
+    assert_eq!(scalar(&repo, "SELECT COUNT(*) FROM import_runs"), 0);
 }
 
 #[test]

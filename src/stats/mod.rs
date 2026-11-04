@@ -483,14 +483,27 @@ fn compute_all_in_equity(
         let Some(res) = results.iter().find(|r| r.player_name == lp.name) else {
             return;
         };
-        let invested_micros = decimal_to_micro_units(res.invested).unwrap_or(0);
-        let dead_blind_micros: i64 = hand
+        let Some(invested_micros) = decimal_to_micro_units(res.invested) else {
+            return;
+        };
+        let mut dead_blind_micros: i64 = 0;
+        for a in hand
             .actions
             .iter()
             .filter(|a| a.player_name == lp.name && a.action_type == ActionType::PostDeadBlind)
-            .map(|a| decimal_to_micro_units(a.amount).unwrap_or(0))
-            .fold(0i64, |acc, x| acc.saturating_add(x));
-        live_contribs.push(invested_micros.saturating_sub(dead_blind_micros));
+        {
+            let Some(m) = decimal_to_micro_units(a.amount) else {
+                return;
+            };
+            let Some(sum) = dead_blind_micros.checked_add(m) else {
+                return;
+            };
+            dead_blind_micros = sum;
+        }
+        let Some(contrib) = invested_micros.checked_sub(dead_blind_micros) else {
+            return;
+        };
+        live_contribs.push(contrib);
     }
     let Some(&first_contrib) = live_contribs.first() else {
         return;
@@ -540,12 +553,40 @@ fn compute_all_in_equity(
         return;
     }
 
-    let deductions_dec = hand
-        .outcome
-        .checked_total_deductions()
-        .unwrap_or(Decimal::ZERO);
-    let pot_after_dec = hand.outcome.total_pot.saturating_sub(deductions_dec);
-    let pot_after_micros = decimal_to_micro_units(pot_after_dec).unwrap_or(0);
+    let Some(deductions_dec) = hand.outcome.checked_total_deductions() else {
+        return;
+    };
+    let Some(pot_after_dec) = hand.outcome.total_pot.checked_sub(deductions_dec) else {
+        return;
+    };
+    let Some(pot_after_micros) = decimal_to_micro_units(pot_after_dec) else {
+        return;
+    };
+
+    for (lp, &(num, den)) in live_players.iter().zip(&equities) {
+        if i64::try_from(num).is_err() || i64::try_from(den).is_err() {
+            return;
+        }
+        let Some(res) = results.iter().find(|r| r.player_name == lp.name) else {
+            return;
+        };
+        if decimal_to_micro_units(res.invested).is_none()
+            || decimal_to_micro_units(res.adjustments).is_none()
+            || decimal_to_micro_units(res.net).is_none()
+        {
+            return;
+        }
+        let num_128 = i128::from(num);
+        let pot_128 = i128::from(pot_after_micros);
+        let den_128 = i128::from(den);
+        let Some(prod) = num_128.checked_mul(pot_128) else {
+            return;
+        };
+        let ev_won_128 = round_half_even_quotient(prod, den_128);
+        if i64::try_from(ev_won_128).is_err() {
+            return;
+        }
+    }
 
     for (lp, &(num, den)) in live_players.iter().zip(&equities) {
         let Some(&idx) = state.name_to_idx.get(lp.name.as_str()) else {
@@ -558,9 +599,12 @@ fn compute_all_in_equity(
             continue;
         };
 
+        let equity_num = i64::try_from(num).unwrap_or(0);
+        let equity_den = i64::try_from(den).unwrap_or(1);
+
         s.ev_qualified = 1;
-        s.ev_equity_num = num as i64;
-        s.ev_equity_den = den as i64;
+        s.ev_equity_num = equity_num;
+        s.ev_equity_den = equity_den;
 
         let took_ev_cashout = hand.outcome.adjustments.iter().any(|a| {
             a.player_name == lp.name
@@ -572,8 +616,12 @@ fn compute_all_in_equity(
             let net_micros = decimal_to_micro_units(res.net).unwrap_or(0);
             s.ev_net_micros = net_micros;
         } else {
-            let prod = (num as i128).saturating_mul(pot_after_micros as i128);
-            let ev_won = round_half_even_quotient(prod, den as i128) as i64;
+            let num_128 = i128::from(num);
+            let pot_128 = i128::from(pot_after_micros);
+            let den_128 = i128::from(den);
+            let prod = num_128.saturating_mul(pot_128);
+            let ev_won_128 = round_half_even_quotient(prod, den_128);
+            let ev_won = i64::try_from(ev_won_128).unwrap_or(0);
             let invested_micros = decimal_to_micro_units(res.invested).unwrap_or(0);
             let adjustments_micros = decimal_to_micro_units(res.adjustments).unwrap_or(0);
             s.ev_net_micros = ev_won

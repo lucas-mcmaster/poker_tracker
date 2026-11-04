@@ -32,28 +32,31 @@ pub fn split_by_largest_remainder(total: i64, weights_and_seats: &[(u8, i64)]) -
         return vec![0; weights_and_seats.len()];
     }
 
-    let w_sum: i64 = weights_and_seats.iter().map(|&(_, w)| w).sum();
+    let w_sum: i128 = weights_and_seats
+        .iter()
+        .map(|&(_, w)| i128::from(w.max(0)))
+        .sum();
     if w_sum <= 0 {
         return vec![0; weights_and_seats.len()];
     }
 
-    let total_128 = total as i128;
-    let w_sum_128 = w_sum as i128;
+    let total_128 = i128::from(total);
 
     let mut base_parts = Vec::with_capacity(weights_and_seats.len());
     let mut remainders = Vec::with_capacity(weights_and_seats.len());
 
     for (idx, &(seat, w)) in weights_and_seats.iter().enumerate() {
-        let w_128 = (w.max(0)) as i128;
+        let w_128 = i128::from(w.max(0));
         let prod = total_128.saturating_mul(w_128);
-        let base = (prod / w_sum_128) as i64;
-        let rem = prod % w_sum_128;
+        let base_128 = prod / w_sum;
+        let base = i64::try_from(base_128).unwrap_or(0);
+        let rem = prod % w_sum;
         base_parts.push(base);
         remainders.push((idx, seat, rem));
     }
 
-    let distributed: i64 = base_parts.iter().sum();
-    let leftover = (total.saturating_sub(distributed)).max(0) as usize;
+    let distributed_128: i128 = base_parts.iter().map(|&b| i128::from(b)).sum();
+    let leftover = usize::try_from((total_128.saturating_sub(distributed_128)).max(0)).unwrap_or(0);
 
     if leftover > 0 {
         // Sort descending by remainder; ties broken by lower seat number (ascending)
@@ -120,27 +123,27 @@ pub fn compute_hand_money(hand: &CanonicalHand) -> Vec<HandPlayerMoney> {
 
     let mut money_stats = Vec::with_capacity(hand.players.len());
     for (i, p) in hand.players.iter().enumerate() {
-        let mut blinds_dec = Decimal::ZERO;
-        let mut straddles_dec = Decimal::ZERO;
+        let mut blinds_dec: Option<Decimal> = Some(Decimal::ZERO);
+        let mut straddles_dec: Option<Decimal> = Some(Decimal::ZERO);
         for a in hand.actions.iter().filter(|a| a.player_name == p.name) {
             match a.action_type {
                 ActionType::PostSmallBlind
                 | ActionType::PostBigBlind
                 | ActionType::PostDeadBlind => {
-                    if let Some(sum) = blinds_dec.checked_add(a.amount) {
-                        blinds_dec = sum;
+                    if let Some(sum) = blinds_dec {
+                        blinds_dec = sum.checked_add(a.amount);
                     }
                 }
                 ActionType::PostStraddle => {
-                    if let Some(sum) = straddles_dec.checked_add(a.amount) {
-                        straddles_dec = sum;
+                    if let Some(sum) = straddles_dec {
+                        straddles_dec = sum.checked_add(a.amount);
                     }
                 }
                 _ => {}
             }
         }
-        let blinds_posted_micros = decimal_to_micro_units(blinds_dec).unwrap_or(0);
-        let straddles_posted_micros = decimal_to_micro_units(straddles_dec).unwrap_or(0);
+        let blinds_posted_micros = blinds_dec.and_then(decimal_to_micro_units).unwrap_or(0);
+        let straddles_posted_micros = straddles_dec.and_then(decimal_to_micro_units).unwrap_or(0);
 
         money_stats.push(HandPlayerMoney {
             rake_attributed_micros: *rake_parts.get(i).unwrap_or(&0),
