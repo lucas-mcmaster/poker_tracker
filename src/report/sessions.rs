@@ -222,13 +222,7 @@ pub(crate) fn build_sessions_rows(
 
     let mut rows = Vec::new();
     for session in group_sessions(hands) {
-        let mut bb_won = BbWon::default();
-        for (_, hand) in &session {
-            bb_won.add(hand.big_blind_micros, hand.net_micros);
-        }
-        let hands = i64::try_from(session.len()).unwrap_or(i64::MAX);
-        bb_won.format_bb_per_100(hands, "bb_per_100")?;
-        if let Some(r) = session_row(&session) {
+        if let Some(r) = session_row(&session)? {
             rows.push(r);
         }
     }
@@ -236,8 +230,10 @@ pub(crate) fn build_sessions_rows(
 }
 
 /// One session's CSV row (`None` only for an empty session, which `group_sessions` never makes).
-fn session_row(session: &[TimedHand]) -> Option<SessionsRow> {
-    let ((_, first), (_, last)) = (session.first()?, session.last()?);
+fn session_row(session: &[TimedHand]) -> Result<Option<SessionsRow>, ReportError> {
+    let (Some((_, first)), Some((_, last))) = (session.first(), session.last()) else {
+        return Ok(None);
+    };
     let mut total_net: i64 = 0;
     let mut total_ev_net: i64 = 0;
     let mut bb_won = BbWon::default();
@@ -247,11 +243,9 @@ fn session_row(session: &[TimedHand]) -> Option<SessionsRow> {
         bb_won.add(hand.big_blind_micros, hand.net_micros);
     }
     let hands = i64::try_from(session.len()).unwrap_or(i64::MAX);
-    let bb_per_100 = bb_won
-        .format_bb_per_100(hands, "bb_per_100")
-        .unwrap_or_else(|_| "0.00".to_string());
+    let bb_per_100 = bb_won.format_bb_per_100(hands, "bb_per_100")?;
 
-    Some(SessionsRow {
+    Ok(Some(SessionsRow {
         currency: first.currency.clone(),
         platform: first.platform.clone(),
         table: first.table.clone(),
@@ -262,7 +256,7 @@ fn session_row(session: &[TimedHand]) -> Option<SessionsRow> {
         net: format_exact_money(total_net),
         bb_per_100,
         ev_net: format_exact_money(total_ev_net),
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -414,7 +408,7 @@ mod tests {
                 (h.local, h)
             })
             .collect();
-        let row = session_row(&session).unwrap();
+        let row = session_row(&session).unwrap().unwrap();
         assert_eq!(row.net, "1237.23");
         assert_eq!(row.bb_per_100, "5155.12");
     }

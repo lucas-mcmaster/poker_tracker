@@ -1661,3 +1661,314 @@ fn unrepresentable_total_pot_fails_closed_in_compute_all_in_equity() {
     assert_eq!(stats[1].ev_qualified, 0);
     assert_eq!(stats[1].ev_net_micros, -10_000_000);
 }
+
+/// Hero (Ah Ad) and Villain (Kh Kd) heads-up, all-in on the turn of 2c 7d 9h Ks (3s): each
+/// invests 10, Hero wins 20, `total_pot` 20.
+fn hu_turn_all_in() -> poker_tracker::domain::CanonicalHand {
+    let mut p = vec![
+        make_player(1, "Hero", dec!(10), true),
+        make_player(2, "Villain", dec!(10), false),
+    ];
+    p[0].hole_cards = [Some("Ah".parse().unwrap()), Some("Ad".parse().unwrap())];
+    p[1].hole_cards = [Some("Kh".parse().unwrap()), Some("Kd".parse().unwrap())];
+    let a = vec![
+        make_action(
+            0,
+            Street::Preflop,
+            "Hero",
+            ActionType::PostSmallBlind,
+            dec!(0.05),
+            dec!(0.05),
+            false,
+        ),
+        make_action(
+            1,
+            Street::Preflop,
+            "Villain",
+            ActionType::PostBigBlind,
+            dec!(0.10),
+            dec!(0.10),
+            false,
+        ),
+        make_action(
+            2,
+            Street::Preflop,
+            "Hero",
+            ActionType::Call,
+            dec!(0.05),
+            dec!(0.10),
+            false,
+        ),
+        make_action(
+            3,
+            Street::Preflop,
+            "Villain",
+            ActionType::Check,
+            dec!(0),
+            dec!(0.10),
+            false,
+        ),
+        make_action(
+            4,
+            Street::Flop,
+            "Villain",
+            ActionType::Check,
+            dec!(0),
+            dec!(0),
+            false,
+        ),
+        make_action(
+            5,
+            Street::Flop,
+            "Hero",
+            ActionType::Check,
+            dec!(0),
+            dec!(0),
+            false,
+        ),
+        make_action(
+            6,
+            Street::Turn,
+            "Villain",
+            ActionType::Check,
+            dec!(0),
+            dec!(0),
+            false,
+        ),
+        make_action(
+            7,
+            Street::Turn,
+            "Hero",
+            ActionType::Bet,
+            dec!(9.90),
+            dec!(9.90),
+            true,
+        ),
+        make_action(
+            8,
+            Street::Turn,
+            "Villain",
+            ActionType::Call,
+            dec!(9.90),
+            dec!(9.90),
+            true,
+        ),
+    ];
+    let board = CommunityCards {
+        run_index: 0,
+        flop: Some([
+            "2c".parse().unwrap(),
+            "7d".parse().unwrap(),
+            "9h".parse().unwrap(),
+        ]),
+        turn: Some("Ks".parse().unwrap()),
+        river: Some("3s".parse().unwrap()),
+    };
+    let mut h = make_canonical_hand(1, p, a, vec![board], vec![("Hero", dec!(20))]);
+    h.outcome.total_pot = dec!(20);
+    h
+}
+
+#[test]
+fn an_unconvertible_deductions_sum_does_not_qualify() {
+    use poker_tracker::domain::{DeductionKind, PotDeduction};
+    // `total_pot` 20.0000005 minus `Rake` 0.0000005 is 20, but the deductions sum itself has
+    // 7 decimals (M16.1.2.2): nobody qualifies and each ev_net is the net.
+    let stats = derive_hand_stats(&hu_turn_all_in());
+    assert_eq!((stats[0].ev_qualified, stats[1].ev_qualified), (1, 1));
+    let mut h = hu_turn_all_in();
+    h.outcome.total_pot = dec!(20.0000005);
+    h.outcome.deductions = vec![PotDeduction {
+        kind: DeductionKind::Rake,
+        label: "Rake".to_string(),
+        amount: dec!(0.0000005),
+    }];
+    let stats = derive_hand_stats(&h);
+    assert_eq!((stats[0].ev_qualified, stats[1].ev_qualified), (0, 0));
+    assert_eq!(
+        (stats[0].ev_net_micros, stats[1].ev_net_micros),
+        (10_000_000, -10_000_000)
+    );
+}
+
+#[test]
+fn a_live_player_whose_net_is_unconvertible_does_not_qualify_with_a_folder_seated_between() {
+    // Seats: Hero 1, Folder 2 (button, folds preflop), Villain 3. Villain wins 20.0000005, so
+    // Villain's net 10.0000005 has 7 decimals: nobody qualifies.
+    let mut p = vec![
+        make_player(1, "Hero", dec!(10), true),
+        make_player(2, "Folder", dec!(10), false),
+        make_player(3, "Villain", dec!(10), false),
+    ];
+    p[0].hole_cards = [Some("Kh".parse().unwrap()), Some("Kd".parse().unwrap())];
+    p[2].hole_cards = [Some("Ah".parse().unwrap()), Some("Ad".parse().unwrap())];
+    let a = vec![
+        make_action(
+            0,
+            Street::Preflop,
+            "Villain",
+            ActionType::PostSmallBlind,
+            dec!(0.05),
+            dec!(0.05),
+            false,
+        ),
+        make_action(
+            1,
+            Street::Preflop,
+            "Hero",
+            ActionType::PostBigBlind,
+            dec!(0.10),
+            dec!(0.10),
+            false,
+        ),
+        make_action(
+            2,
+            Street::Preflop,
+            "Folder",
+            ActionType::Fold,
+            dec!(0),
+            dec!(0.10),
+            false,
+        ),
+        make_action(
+            3,
+            Street::Preflop,
+            "Villain",
+            ActionType::Call,
+            dec!(0.05),
+            dec!(0.10),
+            false,
+        ),
+        make_action(
+            4,
+            Street::Preflop,
+            "Hero",
+            ActionType::Check,
+            dec!(0),
+            dec!(0.10),
+            false,
+        ),
+        make_action(
+            5,
+            Street::Flop,
+            "Villain",
+            ActionType::Check,
+            dec!(0),
+            dec!(0),
+            false,
+        ),
+        make_action(
+            6,
+            Street::Flop,
+            "Hero",
+            ActionType::Check,
+            dec!(0),
+            dec!(0),
+            false,
+        ),
+        make_action(
+            7,
+            Street::Turn,
+            "Villain",
+            ActionType::Check,
+            dec!(0),
+            dec!(0),
+            false,
+        ),
+        make_action(
+            8,
+            Street::Turn,
+            "Hero",
+            ActionType::Bet,
+            dec!(9.90),
+            dec!(9.90),
+            true,
+        ),
+        make_action(
+            9,
+            Street::Turn,
+            "Villain",
+            ActionType::Call,
+            dec!(9.90),
+            dec!(9.90),
+            true,
+        ),
+    ];
+    let board = CommunityCards {
+        run_index: 0,
+        flop: Some([
+            "2c".parse().unwrap(),
+            "7d".parse().unwrap(),
+            "9h".parse().unwrap(),
+        ]),
+        turn: Some("Qs".parse().unwrap()),
+        river: Some("3s".parse().unwrap()),
+    };
+    let mut h = make_canonical_hand(2, p, a, vec![board], vec![("Villain", dec!(20.0000005))]);
+    h.outcome.total_pot = dec!(20);
+    let stats = derive_hand_stats(&h);
+    assert_eq!(
+        stats.iter().map(|s| s.ev_qualified).collect::<Vec<_>>(),
+        [0, 0, 0]
+    );
+    assert_eq!(stats[0].ev_net_micros, -10_000_000);
+    // Control: with Villain winning exactly 20 the same hand qualifies.
+    h.outcome.winners[0].amount = dec!(20);
+    let stats = derive_hand_stats(&h);
+    assert_eq!(
+        stats.iter().map(|s| s.ev_qualified).collect::<Vec<_>>(),
+        [1, 0, 1]
+    );
+}
+
+#[test]
+fn an_unconvertible_invested_gives_every_rake_and_fee_part_zero() {
+    use poker_tracker::domain::{DeductionKind, PotDeduction};
+    // Villain's invested 5.0000005 has 7 decimals (M16.1.2 policy: a split is all zeros).
+    let p = vec![
+        make_player(1, "Hero", dec!(10), true),
+        make_player(2, "Villain", dec!(10), false),
+    ];
+    let a = vec![
+        make_action(
+            0,
+            Street::Preflop,
+            "Hero",
+            ActionType::PostSmallBlind,
+            dec!(5),
+            dec!(5),
+            false,
+        ),
+        make_action(
+            1,
+            Street::Preflop,
+            "Villain",
+            ActionType::PostBigBlind,
+            dec!(5.0000005),
+            dec!(5.0000005),
+            false,
+        ),
+    ];
+    let mut h = make_canonical_hand(1, p, a, vec![], vec![("Villain", dec!(0.97))]);
+    h.outcome.total_pot = dec!(1.0);
+    h.outcome.deductions = vec![
+        PotDeduction {
+            kind: DeductionKind::Rake,
+            label: "Rake".to_string(),
+            amount: dec!(0.01),
+        },
+        PotDeduction {
+            kind: DeductionKind::Jackpot,
+            label: "Jackpot".to_string(),
+            amount: dec!(0.02),
+        },
+    ];
+    let stats = derive_hand_stats(&h);
+    assert_eq!(
+        stats
+            .iter()
+            .map(|s| (s.rake_attributed_micros, s.fees_attributed_micros))
+            .collect::<Vec<_>>(),
+        [(0, 0), (0, 0)]
+    );
+}

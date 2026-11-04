@@ -393,3 +393,28 @@ fn ingest_directory_at_records_exact_started_at() {
         .unwrap();
     assert_eq!(stored_started, "2026-11-03T14:30:00Z");
 }
+
+#[test]
+fn a_quarantine_only_import_records_its_started_at() {
+    // The file's only hand fails to parse, so the run is registered by the quarantine write.
+    let dir = TempDir::new().unwrap();
+    let broken = WALK.replace("Dealt to Hero [Ts 6d]", "Dealt to Hero [1s 6d]");
+    fs::write(dir.path().join("w.txt"), broken).unwrap();
+    let mut repo = SqliteRepository::open_in_memory().unwrap();
+    let fixed_time = chrono::DateTime::parse_from_rfc3339("2026-11-03T14:30:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let report = DirectoryIngester::default()
+        .ingest_directory_at(dir.path(), &registry(), &mut repo, fixed_time)
+        .unwrap();
+    assert_eq!((report.hands_ingested, report.hands_quarantined), (0, 1));
+    let stored_started: String = repo
+        .connection()
+        .query_row(
+            "SELECT started_at FROM import_runs WHERE id = ?1",
+            [report.batch_run_id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored_started, "2026-11-03T14:30:00Z");
+}

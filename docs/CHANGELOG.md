@@ -23,6 +23,7 @@ History only, never a specification. The current spec and living rules are liste
 - **M16.1.6 (Rebuild errors name the hand):** rebuild derived errors wrap load and insert errors in `DerivedRebuildFailed` naming the platform and hand ID; missing seated players return `MissingPlayerId`.
 - **M16.1.7 (CSV RFC 4180 quoting):** report text fields containing commas, double quotes, CR, or LF are quoted with doubled quotes.
 - **M16.1.8 (Docs and CLI wording):** updated `docs/invariants.md` and `docs/CHANGELOG.md`; refined CLI usage strings, `--rebuild-stats` combined option error messages, and `--delete-run` notices.
+- **M16.1 review:** `bb_won` sums each big blind's net in checked `i128` (it saturated in `i64`); an `invested` that cannot be represented makes the whole rake and fee split `0`; the equity fails closed on the deductions sum and on `ev_net_micros`; sessions compute `bb/100` once. New tests pin the fraction reduction across ten big blinds, CSV quoting per character, the start time of a quarantine-only run, and both branches of `rebuild_if_stale`.
 
 ## v3.6.1 → v3.7
 

@@ -164,14 +164,18 @@ pub(crate) struct Rational {
 impl Rational {
     pub(crate) const ZERO: Self = Self { num: 0, den: 1 };
 
-    pub(crate) fn new(num: i64, den: i64, figure: &'static str) -> Result<Self, ReportError> {
+    pub(crate) fn new(num: i128, den: i64, figure: &'static str) -> Result<Self, ReportError> {
         if den == 0 {
             return Err(ReportError::ArithmeticOverflow { figure });
         }
         let (num_128, den_128) = if den < 0 {
-            (-i128::from(num), -i128::from(den))
+            (
+                num.checked_neg()
+                    .ok_or(ReportError::ArithmeticOverflow { figure })?,
+                -i128::from(den),
+            )
         } else {
-            (i128::from(num), i128::from(den))
+            (num, i128::from(den))
         };
         let g = i128::try_from(gcd_u128(num_128.unsigned_abs(), den_128.unsigned_abs()))
             .map_err(|_| ReportError::ArithmeticOverflow { figure })?;
@@ -290,20 +294,25 @@ impl Rational {
 /// value and divided once per value, then the quotients are added as exact rationals.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct BbWon {
-    net_by_big_blind: BTreeMap<i64, i64>,
+    net_by_big_blind: BTreeMap<i64, Option<i128>>,
 }
 
 impl BbWon {
-    /// Adds `net_micros` won at `big_blind_micros` (positive by the schema's `CHECK`).
+    /// Adds `net_micros` won at `big_blind_micros` (positive by the schema's `CHECK`). The sum
+    /// is an `i128`; an overflow is kept as `None` and reported by `total_rational`.
     pub(crate) fn add(&mut self, big_blind_micros: i64, net_micros: i64) {
-        let net = self.net_by_big_blind.entry(big_blind_micros).or_insert(0);
-        *net = net.saturating_add(net_micros);
+        let net = self
+            .net_by_big_blind
+            .entry(big_blind_micros)
+            .or_insert(Some(0));
+        *net = net.and_then(|n| n.checked_add(i128::from(net_micros)));
     }
 
     /// `Σ net / big_blind` per big-blind value, added as an exact rational.
     pub(crate) fn total_rational(&self, figure: &'static str) -> Result<Rational, ReportError> {
         let mut total = Rational::ZERO;
         for (&big_blind_micros, &net_micros) in &self.net_by_big_blind {
+            let net_micros = net_micros.ok_or(ReportError::ArithmeticOverflow { figure })?;
             let r = Rational::new(net_micros, big_blind_micros, figure)?;
             total = total.checked_add(r, figure)?;
         }
@@ -491,5 +500,42 @@ mod tests {
             bb_ov.format_bb_won("bb_won"),
             Err(ReportError::ArithmeticOverflow { figure: "bb_won" })
         ));
+    }
+
+    #[test]
+    fn bb_won_sums_the_nets_of_one_big_blind_without_saturating() {
+        // 2 × 5e18 micro-units at a big blind of 1.00: 1e19 / 1e6 = 1e13 bb; over 2 hands 5e14.
+        let mut bb = BbWon::default();
+        bb.add(1_000_000, 5_000_000_000_000_000_000);
+        bb.add(1_000_000, 5_000_000_000_000_000_000);
+        assert_eq!(bb.format_bb_won("bb_won").unwrap(), "10000000000000.00");
+        assert_eq!(
+            bb.format_bb_per_100(2, "bb_per_100").unwrap(),
+            "500000000000000.00"
+        );
+    }
+
+    #[test]
+    fn bb_won_reduces_its_fraction_across_ten_big_blinds() {
+        // Σ net/bb = -61.5 + 91.2 - 78.9 + 61.7 - 22.68 + 17.8 - 23.45 + 33.945 - 9.99666… + 3.93166…
+        // = 241/20 = 12.05 exactly; over 10 hands 120.50. Without reducing, the denominator
+        // (the product of the ten big blinds) overflows i128.
+        let mut bb = BbWon::default();
+        for (big_blind, net) in [
+            (20_000, -1_230_000),
+            (50_000, 4_560_000),
+            (100_000, -7_890_000),
+            (200_000, 12_340_000),
+            (250_000, -5_670_000),
+            (500_000, 8_900_000),
+            (1_000_000, -23_450_000),
+            (2_000_000, 67_890_000),
+            (3_000_000, -29_990_000),
+            (6_000_000, 23_590_000),
+        ] {
+            bb.add(big_blind, net);
+        }
+        assert_eq!(bb.format_bb_won("bb_won").unwrap(), "12.05");
+        assert_eq!(bb.format_bb_per_100(10, "bb_per_100").unwrap(), "120.50");
     }
 }

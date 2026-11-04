@@ -79,13 +79,16 @@ pub fn compute_hand_money(hand: &CanonicalHand) -> Vec<HandPlayerMoney> {
         return Vec::new();
     }
 
-    let player_investeds: Vec<i64> = match hand.checked_player_results() {
-        Some(results) => results
-            .iter()
-            .map(|r| decimal_to_micro_units(r.invested).unwrap_or(0))
-            .collect(),
-        None => vec![0; hand.players.len()],
-    };
+    // One `invested` that cannot be converted makes every weight 0, so every part is 0.
+    let player_investeds: Vec<i64> = hand
+        .checked_player_results()
+        .and_then(|results| {
+            results
+                .iter()
+                .map(|r| decimal_to_micro_units(r.invested))
+                .collect::<Option<Vec<i64>>>()
+        })
+        .unwrap_or_else(|| vec![0; hand.players.len()]);
 
     let weights_and_seats: Vec<(u8, i64)> = hand
         .players

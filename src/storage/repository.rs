@@ -1470,4 +1470,58 @@ mod tests {
             .unwrap();
         assert_eq!(built_at, built_at_after);
     }
+    #[test]
+    fn rebuild_if_stale_rebuilds_only_when_the_locked_version_is_stale() {
+        use crate::parser::{GgPokerParser, HandParser};
+        let text = include_str!("../../tests/fixtures/ggpoker/NLHRed15_2026-08-21.txt");
+        let parser = GgPokerParser::new(crate::domain::CurrencyCode::CAD);
+        let block = parser.split_blocks(text).into_iter().next().unwrap();
+        let hand = parser.parse_hand(block.text).unwrap();
+        let mut repo = SqliteRepository::open_in_memory().unwrap();
+        repo.insert_hands_batch(&[hand]).unwrap();
+        let sentinel = "2000-01-01T00:00:00Z";
+        let cache = |conn: &Connection| -> (i64, String, Vec<(i64, i64, i64)>) {
+            let (version, built_at) = conn
+                .query_row(
+                    "SELECT version, built_at FROM derived_cache WHERE name = 'hand_player_stats'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            let rows = conn
+                .prepare("SELECT hand_id, player_id, p_vpip FROM hand_player_stats ORDER BY 1, 2")
+                .unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            (version, built_at, rows)
+        };
+
+        // Current under the lock: nothing is rebuilt; the sentinel and a doctored row survive.
+        repo.conn
+            .execute_batch(&format!(
+                "UPDATE derived_cache SET built_at = '{sentinel}';
+                 UPDATE hand_player_stats SET p_vpip = 1 - p_vpip WHERE player_id = (SELECT MIN(player_id) FROM hand_player_stats);"
+            ))
+            .unwrap();
+        let before = cache(&repo.conn);
+        assert_eq!(before.1, sentinel);
+        assert_eq!(rebuild_if_stale(&mut repo.conn).unwrap(), None);
+        assert_eq!(cache(&repo.conn), before);
+
+        // Stale under the lock: one hand is rebuilt, the version and the doctored row restored.
+        repo.conn
+            .execute(
+                "UPDATE derived_cache SET version = ?1",
+                [crate::stats::STATS_VERSION + 1],
+            )
+            .unwrap();
+        let rebuild = rebuild_if_stale(&mut repo.conn).unwrap().unwrap();
+        assert_eq!(rebuild.hands, 1);
+        let after = cache(&repo.conn);
+        assert_eq!(after.0, crate::stats::STATS_VERSION);
+        assert_ne!(after.1, sentinel);
+        assert_ne!(after.2, before.2);
+    }
 }

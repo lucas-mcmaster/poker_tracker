@@ -556,6 +556,9 @@ fn compute_all_in_equity(
     let Some(deductions_dec) = hand.outcome.checked_total_deductions() else {
         return;
     };
+    if decimal_to_micro_units(deductions_dec).is_none() {
+        return;
+    }
     let Some(pot_after_dec) = hand.outcome.total_pot.checked_sub(deductions_dec) else {
         return;
     };
@@ -563,70 +566,56 @@ fn compute_all_in_equity(
         return;
     };
 
+    // Compute every live player's figures first; one that cannot be computed disqualifies the hand.
+    let mut computed = Vec::with_capacity(live_players.len());
     for (lp, &(num, den)) in live_players.iter().zip(&equities) {
-        if i64::try_from(num).is_err() || i64::try_from(den).is_err() {
-            return;
-        }
-        let Some(res) = results.iter().find(|r| r.player_name == lp.name) else {
+        let (Ok(equity_num), Ok(equity_den)) = (i64::try_from(num), i64::try_from(den)) else {
             return;
         };
-        if decimal_to_micro_units(res.invested).is_none()
-            || decimal_to_micro_units(res.adjustments).is_none()
-            || decimal_to_micro_units(res.net).is_none()
-        {
-            return;
-        }
-        let num_128 = i128::from(num);
-        let pot_128 = i128::from(pot_after_micros);
-        let den_128 = i128::from(den);
-        let Some(prod) = num_128.checked_mul(pot_128) else {
+        let (Some(&idx), Some(res)) = (
+            state.name_to_idx.get(lp.name.as_str()),
+            results.iter().find(|r| r.player_name == lp.name),
+        ) else {
             return;
         };
-        let ev_won_128 = round_half_even_quotient(prod, den_128);
-        if i64::try_from(ev_won_128).is_err() {
+        let (Some(invested), Some(adjustments), Some(net)) = (
+            decimal_to_micro_units(res.invested),
+            decimal_to_micro_units(res.adjustments),
+            decimal_to_micro_units(res.net),
+        ) else {
             return;
-        }
-    }
-
-    for (lp, &(num, den)) in live_players.iter().zip(&equities) {
-        let Some(&idx) = state.name_to_idx.get(lp.name.as_str()) else {
-            continue;
         };
-        let Some(s) = stats.get_mut(idx) else {
-            continue;
-        };
-        let Some(res) = results.iter().find(|r| r.player_name == lp.name) else {
-            continue;
-        };
-
-        let equity_num = i64::try_from(num).unwrap_or(0);
-        let equity_den = i64::try_from(den).unwrap_or(1);
-
-        s.ev_qualified = 1;
-        s.ev_equity_num = equity_num;
-        s.ev_equity_den = equity_den;
-
         let took_ev_cashout = hand.outcome.adjustments.iter().any(|a| {
             a.player_name == lp.name
                 && (a.kind == AdjustmentKind::EvCashoutRiskPaid
                     || a.kind == AdjustmentKind::EvCashoutReceived)
         });
-
-        if took_ev_cashout {
-            let net_micros = decimal_to_micro_units(res.net).unwrap_or(0);
-            s.ev_net_micros = net_micros;
+        let ev_net = if took_ev_cashout {
+            net
         } else {
-            let num_128 = i128::from(num);
-            let pot_128 = i128::from(pot_after_micros);
-            let den_128 = i128::from(den);
-            let prod = num_128.saturating_mul(pot_128);
-            let ev_won_128 = round_half_even_quotient(prod, den_128);
-            let ev_won = i64::try_from(ev_won_128).unwrap_or(0);
-            let invested_micros = decimal_to_micro_units(res.invested).unwrap_or(0);
-            let adjustments_micros = decimal_to_micro_units(res.adjustments).unwrap_or(0);
-            s.ev_net_micros = ev_won
-                .saturating_sub(invested_micros)
-                .saturating_add(adjustments_micros);
+            let Some(prod) = i128::from(num).checked_mul(i128::from(pot_after_micros)) else {
+                return;
+            };
+            let Ok(ev_won) = i64::try_from(round_half_even_quotient(prod, i128::from(den))) else {
+                return;
+            };
+            let Some(ev_net) = ev_won
+                .checked_sub(invested)
+                .and_then(|v| v.checked_add(adjustments))
+            else {
+                return;
+            };
+            ev_net
+        };
+        computed.push((idx, equity_num, equity_den, ev_net));
+    }
+
+    for (idx, equity_num, equity_den, ev_net) in computed {
+        if let Some(s) = stats.get_mut(idx) {
+            s.ev_qualified = 1;
+            s.ev_equity_num = equity_num;
+            s.ev_equity_den = equity_den;
+            s.ev_net_micros = ev_net;
         }
     }
 }

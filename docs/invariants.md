@@ -217,7 +217,8 @@ lifecycle contract is `docs/SPEC_v3.7.md` §2 and the report contract §6.
   amounts; `straddles_posted_micros` sums their `PostStraddle` amounts.
 - **Fail-closed policy.** An amount that cannot be represented in micro-units, or a sum that
   overflows, never becomes a plausible value. Blind or straddle sums that overflow make that
-  column `0`.
+  column `0`. If any player's `invested` cannot be represented, every rake and fee part of the
+  hand is `0`.
 - **Contributed method.** `rake_attributed_micros` splits the hand's `Rake` deductions, and
   `fees_attributed_micros` one sum of all its other deductions (`Jackpot` and `Other`), among all
   players in proportion to `invested`.
@@ -238,9 +239,10 @@ lifecycle contract is `docs/SPEC_v3.7.md` §2 and the report contract §6.
   3. every live player's two hole cards are known;
   4. every live player has the same live contribution (`invested` minus their `PostDeadBlind`
      amounts): a single pot. Multiway all-ins with side pots are excluded.
-  When any condition fails, or if amounts cannot be represented in micro-units or overflow during
-  pot or deduction conversion, the hand fails closed and does not qualify (`ev_qualified = 0`,
-  equity `0/1`, `ev_net_micros = net_micros`).
+  When any condition fails, or an amount the equity uses cannot be represented in micro-units or
+  a sum overflows (a live player's `invested`, `PostDeadBlind` amounts, adjustments or net; the
+  deductions sum; the pot after deductions; a live player's `ev_net_micros`), the hand fails
+  closed and does not qualify (`ev_qualified = 0`, equity `0/1`, `ev_net_micros = net_micros`).
 - **Board and deck rule.** Equity enumerates every completion of the board cards dealt by the
   all-in street (preflop: 0; flop: 3; turn: 4; for multi-run hands, the first run's cards up to
   that street). Only the board cards and the **live players'** hole cards are removed from the
