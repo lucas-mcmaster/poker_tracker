@@ -4,6 +4,7 @@ History only, never a specification. The current spec and living rules are liste
 
 | Version | Crate | Tests | Summary |
 | :--- | :--- | :--- | :--- |
+| v3.7.1 | 0.5.0 | 238 | Audit fixes: exact bb_won aggregation, fail-closed fallbacks, robust CLI, parser strictness (exact amounts, heads-up button/blind, EV cashout street restriction, multi-run shared cards, leniencies tightened). |
 | v3.7 | 0.5.0 | 182 | Derived statistics cache (M13–M16): positions, opportunity counters, reports, and exact all-in equity. |
 | v3.6.1 | 0.5.0 | 123 | Audit fixes: refuse six never-observed hand shapes, summary-card and `won`/`collected` checks completed, database identity read as one snapshot (foreign files refused at once), docs synced with code. |
 | v3.6 | 0.5.0 | 121 | Closes four §8 limitations using real GGPoker data: heads-up summary labels, uncontested summary shows, straddles, and EV Cashout receiving side; verified across 10 session exports (989 hands). |
@@ -24,6 +25,13 @@ History only, never a specification. The current spec and living rules are liste
 - **M16.1.7 (CSV RFC 4180 quoting):** report text fields containing commas, double quotes, CR, or LF are quoted with doubled quotes.
 - **M16.1.8 (Docs and CLI wording):** updated `docs/invariants.md` and `docs/CHANGELOG.md`; refined CLI usage strings, `--rebuild-stats` combined option error messages, and `--delete-run` notices.
 - **M16.1 review:** `bb_won` sums each big blind's net in checked `i128` (it saturated in `i64`); an `invested` that cannot be represented makes the whole rake and fee split `0`; the equity fails closed on the deductions sum and on `ev_net_micros`; sessions compute `bb/100` once. New tests pin the fraction reduction across ten big blinds, CSV quoting per character, the start time of a quarantine-only run, and both branches of `rebuild_if_stale`.
+- **M16.2.1 (Exact amounts and at most two decimals):** `parse_decimal` uses `Decimal::from_str_exact`, rejecting rounded values beyond 28 digits; `amt!()` restricted to at most two decimal places.
+- **M16.2.2 (Heads-up button seated and posts small blind):** heads-up validation requires a seated player at the button seat who posts the small blind.
+- **M16.2.3 (EV Cashout preflop restriction in GGPoker parser):** site-neutral core allows preflop cashout (pinned by canonical test); GGPoker parser restricts `Chooses to EV Cashout` to `Flop | Turn`.
+- **M16.2.4 (Multi-run runouts retain cards bet on):** `validate_boards` verifies multi-run runouts share cards through the street betting closed; parser restricts subsequent flop/turn headers to streets without actions and rejects duplicate summary `Board` lines.
+- **M16.2.5 (Validator detail assertions and near-miss verification):** `assert_violation` asserts error detail substrings; near-miss tests verified for nine validator rules.
+- **M16.2.6 (Leniencies tightened):** card tokens require observed case (`23456789TJQKA` / `cdhs`); `shows` regex restricted to single parenthesised description; duplicate summary position labels rejected; opponent `Dealt to` trailing space documented as not enforced.
+- **M16.2.7 (Exhaustive matching and domain documentation):** `validate_betting` matches exhaustively on `BettingLimit` and `GameType`; domain doc comments reworded site-neutrally; living invariants updated.
 
 ## v3.6.1 → v3.7
 

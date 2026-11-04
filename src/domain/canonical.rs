@@ -267,7 +267,7 @@ pub struct HandHeader {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Player {
     pub seat: u8,
-    /// Screen name as printed by the site (may be anonymized, e.g. GGPoker hashes).
+    /// Screen name as printed by the site (may be anonymized, e.g. per-session hashes).
     pub name: String,
     pub starting_stack: Decimal,
     /// Known hole cards. Slots fill in order, so `[None, Some(_)]` never occurs. A single known
@@ -375,7 +375,7 @@ stored_identifier!(DeductionKind, "deduction kind", [Rake, Jackpot, Other]);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PotDeduction {
     pub kind: DeductionKind,
-    /// Site label, e.g. `"Rake"`, `"Jackpot"`, `"Bingo"`.
+    /// Site label, e.g. `"Rake"`, `"Jackpot"`, or promotion names.
     pub label: String,
     pub amount: Decimal,
 }
@@ -383,11 +383,11 @@ pub struct PotDeduction {
 /// Category of money moving between a player and the site outside the pot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AdjustmentKind {
-    /// EV Cashout taken, pot won afterwards: the player pays back the cashout risk
-    /// (GGPoker `Pays Cashout Risk ($x)`). Always a debit.
+    /// EV Cashout taken, pot won afterwards: the player pays back the cashout risk.
+    /// Always a debit.
     EvCashoutRiskPaid,
-    /// EV Cashout taken, pot lost afterwards: the player is paid the cashout
-    /// (GGPoker `Receives Cashout ($x)`). Always a credit.
+    /// EV Cashout taken, pot lost afterwards: the player is paid the cashout.
+    /// Always a credit.
     EvCashoutReceived,
 }
 

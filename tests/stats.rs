@@ -16,7 +16,9 @@ use common::{
     HU_PREFLOP_FOLD, SAMPLE_SESSION, STRADDLE_BB_WALK, STRADDLE_UTG_OPTION, SUMMARY_SHOW_TWO_CARDS,
     WALK, gg,
 };
-use poker_tracker::domain::{ActionType, CommunityCards, Player, Street};
+use poker_tracker::domain::{
+    ActionType, AdjustmentKind, Card, CommunityCards, Player, PlayerAdjustment, Street,
+};
 use poker_tracker::parser::HandParser;
 use poker_tracker::stats::{
     COLUMNS, PlayerHandStats, STATS_VERSION, assign_positions, derive_hand_stats, position_label,
@@ -1971,4 +1973,91 @@ fn an_unconvertible_invested_gives_every_rake_and_fee_part_zero() {
             .collect::<Vec<_>>(),
         [(0, 0), (0, 0)]
     );
+}
+
+#[test]
+fn preflop_cashout_allowed_by_core_and_qualifies_for_equity() {
+    let mut p1 = make_player(1, "A", dec!(10), true);
+    p1.hole_cards = [
+        Some(Card::from_str("Ah").unwrap()),
+        Some(Card::from_str("As").unwrap()),
+    ];
+    let mut p2 = make_player(2, "B", dec!(10), false);
+    p2.hole_cards = [
+        Some(Card::from_str("Kc").unwrap()),
+        Some(Card::from_str("Kd").unwrap()),
+    ];
+
+    let actions = vec![
+        make_action(
+            0,
+            Street::Preflop,
+            "A",
+            ActionType::PostSmallBlind,
+            dec!(0.05),
+            dec!(0.05),
+            false,
+        ),
+        make_action(
+            1,
+            Street::Preflop,
+            "B",
+            ActionType::PostBigBlind,
+            dec!(0.10),
+            dec!(0.10),
+            false,
+        ),
+        make_action(
+            2,
+            Street::Preflop,
+            "A",
+            ActionType::Raise,
+            dec!(9.95),
+            dec!(10.0),
+            true,
+        ),
+        make_action(
+            3,
+            Street::Preflop,
+            "B",
+            ActionType::Call,
+            dec!(9.90),
+            dec!(10.0),
+            true,
+        ),
+    ];
+    let boards = vec![CommunityCards {
+        run_index: 0,
+        flop: Some([
+            Card::from_str("2c").unwrap(),
+            Card::from_str("7d").unwrap(),
+            Card::from_str("9h").unwrap(),
+        ]),
+        turn: Some(Card::from_str("3s").unwrap()),
+        river: Some(Card::from_str("4c").unwrap()),
+    }];
+    let mut hand = make_canonical_hand(1, vec![p1, p2], actions, boards, vec![("A", dec!(20))]);
+    hand.outcome.total_pot = dec!(20);
+    hand.outcome.adjustments = vec![PlayerAdjustment {
+        player_name: "A".to_string(),
+        kind: AdjustmentKind::EvCashoutRiskPaid,
+        street: Street::Preflop,
+        amount: dec!(-0.5),
+    }];
+
+    poker_tracker::parser::validate_hand(&hand).unwrap();
+
+    let stats = derive_hand_stats(&hand);
+    let s_a = stats.iter().find(|s| s.player_name == "A").unwrap();
+    let s_b = stats.iter().find(|s| s.player_name == "B").unwrap();
+
+    assert_eq!(s_a.ev_qualified, 1);
+    assert_eq!(s_a.ev_equity_num, 29603);
+    assert_eq!(s_a.ev_equity_den, 36432);
+    assert_eq!(s_a.ev_net_micros, 9_500_000);
+
+    assert_eq!(s_b.ev_qualified, 1);
+    assert_eq!(s_b.ev_equity_num, 6829);
+    assert_eq!(s_b.ev_equity_den, 36432);
+    assert_eq!(s_b.ev_net_micros, -6_251_098);
 }

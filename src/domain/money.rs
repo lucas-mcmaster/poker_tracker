@@ -49,7 +49,7 @@ pub struct CurrencyParseError(pub String);
 /// ISO-4217-style currency code (three uppercase ASCII letters), valid by construction.
 ///
 /// Where a hand's currency comes from is a parser concern: some sites print it in the hand
-/// history, others (GGPoker) print only a symbol, so the account currency is configured.
+/// history, others print only a symbol, so the account currency is configured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CurrencyCode([u8; 3]);
 

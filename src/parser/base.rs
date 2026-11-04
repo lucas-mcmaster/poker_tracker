@@ -6,7 +6,8 @@ use rust_decimal::Decimal;
 use thiserror::Error;
 
 use crate::domain::canonical::{
-    ActionType, AdjustmentKind, CanonicalHand, MAX_RUNOUTS, Platform, Player, PlayerResult, Street,
+    ActionType, AdjustmentKind, BettingLimit, CanonicalHand, GameType, MAX_RUNOUTS, Platform,
+    Player, PlayerResult, Street,
 };
 use crate::domain::card::Card;
 use crate::domain::money::decimal_to_micro_units;
@@ -663,6 +664,43 @@ fn validate_boards(hand: &CanonicalHand, hole_cards_mask: u64) -> Result<usize, 
                 "every multi-run board must be dealt to the river",
             ));
         }
+        let last_betting_street = hand
+            .actions
+            .iter()
+            .filter(|a| a.action_type != ActionType::UncalledBetReturned)
+            .map(|a| a.street)
+            .max()
+            .unwrap_or(Street::Preflop);
+        let first = &hand.boards[0];
+        for board in &hand.boards[1..] {
+            if last_betting_street >= Street::Flop && board.flop != first.flop {
+                return Err(violation(
+                    hand,
+                    format!(
+                        "runout {} does not share flop with first runout",
+                        board.run_index
+                    ),
+                ));
+            }
+            if last_betting_street >= Street::Turn && board.turn != first.turn {
+                return Err(violation(
+                    hand,
+                    format!(
+                        "runout {} does not share turn with first runout",
+                        board.run_index
+                    ),
+                ));
+            }
+            if last_betting_street >= Street::River && board.river != first.river {
+                return Err(violation(
+                    hand,
+                    format!(
+                        "runout {} does not share river with first runout",
+                        board.run_index
+                    ),
+                ));
+            }
+        }
     } else if hand.boards.len() > 1 {
         return Err(violation(hand, "multiple boards without run indices"));
     }
@@ -795,6 +833,12 @@ impl BettingState {
 /// - actions happen only on streets whose cards were dealt; no street is dealt after the hand
 ///   was decided by folds; a hand contested by two or more players reaches the river.
 fn validate_betting(hand: &CanonicalHand) -> Result<(), ParseError> {
+    match hand.header.limit {
+        BettingLimit::NoLimit => {}
+    }
+    match hand.header.game_type {
+        GameType::Cash => {}
+    }
     let mut seats: Vec<u8> = hand.players.iter().map(|p| p.seat).collect();
     seats.sort_unstable();
     let seat_of: HashMap<&str, u8> = hand
@@ -1336,11 +1380,16 @@ mod tests {
         }
     }
 
-    fn assert_violation(h: &CanonicalHand) {
-        assert!(
-            validate_hand(h).is_err(),
-            "expected validator to reject mutated hand"
-        );
+    fn assert_violation(h: &CanonicalHand, expected: &str) {
+        match validate_hand(h) {
+            Err(ParseError::InvariantViolation { detail, .. }) => {
+                assert!(
+                    detail.contains(expected),
+                    "expected invariant violation detail to contain {expected:?}, got {detail:?}"
+                );
+            }
+            other => panic!("expected InvariantViolation containing {expected:?}, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1371,47 +1420,48 @@ mod tests {
     fn rejects_broken_street_total_chain() {
         let mut h = valid_hand();
         h.actions[0].street_total_after = dec!(7);
-        assert_violation(&h);
+        assert_violation(&h, "street_total_after chain broken");
     }
 
     #[test]
     fn rejects_zero_or_multiple_heroes() {
         let mut h = valid_hand();
+        h.players[0].hole_cards = [Some(c("Qc")), Some(c("Qd"))];
         h.players[0].is_hero = true;
-        assert_violation(&h);
+        assert_violation(&h, "expected exactly one hero, found 2");
         let mut h = valid_hand();
         h.players[1].is_hero = false;
-        assert_violation(&h);
+        assert_violation(&h, "expected exactly one hero, found 0");
     }
 
     #[test]
     fn rejects_commitment_beyond_stack_and_false_all_in() {
         let mut h = valid_hand();
-        h.players[0].starting_stack = dec!(0.05);
-        assert_violation(&h);
+        h.players[0].starting_stack = dec!(0.04);
+        assert_violation(&h, "'A' commits 0.05 with a starting stack of 0.04");
         let mut h = valid_hand();
         h.actions[3].is_all_in = true;
-        assert_violation(&h);
+        assert_violation(&h, "'A' is marked all-in after committing 0.10 of 10");
     }
 
     #[test]
     fn rejects_out_of_order_streets_and_sequences() {
         let mut h = valid_hand();
         h.actions[0].street = Street::River;
-        assert_violation(&h);
+        assert_violation(&h, "out of street order");
         let mut h = valid_hand();
         h.actions[2].sequence = 9;
-        assert_violation(&h);
+        assert_violation(&h, "action sequence 9 at position 2");
     }
 
     #[test]
     fn rejects_folded_winner_and_action_after_fold() {
         let mut h = valid_hand();
-        h.outcome.winners[0].player_name = "C".into();
-        assert_violation(&h);
+        h.outcome.winners[0].player_name = "Hero".into();
+        assert_violation(&h, "folded player 'Hero' wins a pot");
         let mut h = valid_hand();
         h.actions[4].player_name = "C".into();
-        assert_violation(&h);
+        assert_violation(&h, "'C' acts after folding");
     }
 
     #[test]
@@ -1438,10 +1488,10 @@ mod tests {
     fn rejects_non_canonical_partial_hole_cards_and_unlabeled_deductions() {
         let mut h = valid_hand();
         h.players[0].hole_cards = [None, Some(c("2s"))];
-        assert_violation(&h);
+        assert_violation(&h, "non-canonical hole cards for 'A'");
         let mut h = valid_hand();
         h.outcome.deductions[0].label = " ".into();
-        assert_violation(&h);
+        assert_violation(&h, "pot deduction without a label");
     }
 
     #[test]
@@ -1467,7 +1517,7 @@ mod tests {
             AdjustmentKind::EvCashoutRiskPaid,
             dec!(0.05),
         ));
-        assert_violation(&h);
+        assert_violation(&h, "EvCashoutRiskPaid adjustment for 'A' has amount 0.05");
         let mut h = valid_hand();
         h.outcome.adjustments.push(adjustment(
             "Nobody",
@@ -1491,7 +1541,7 @@ mod tests {
             AdjustmentKind::EvCashoutRiskPaid,
             dec!(-0.02),
         ));
-        assert_violation(&h);
+        assert_violation(&h, "multiple adjustments for player 'A'");
 
         // EvCashoutReceived for winning player
         let mut h = valid_hand();
@@ -1500,7 +1550,7 @@ mod tests {
             AdjustmentKind::EvCashoutReceived,
             dec!(0.05),
         ));
-        assert_violation(&h);
+        assert_violation(&h, "winning player 'A' received EV cashout");
 
         // EvCashoutRiskPaid for non-winning player
         let mut h = valid_hand();
@@ -1509,7 +1559,7 @@ mod tests {
             AdjustmentKind::EvCashoutRiskPaid,
             dec!(-0.05),
         ));
-        assert_violation(&h);
+        assert_violation(&h, "non-winning player 'Hero' paid EV cashout risk");
 
         // EvCashoutReceived for folded player
         let mut h = valid_hand();
@@ -1518,14 +1568,504 @@ mod tests {
             AdjustmentKind::EvCashoutReceived,
             dec!(0.05),
         ));
-        assert_violation(&h);
+        assert_violation(&h, "folded player 'Hero' received EV cashout");
     }
 
     #[test]
     fn rejects_payout_on_nonexistent_run() {
         let mut h = valid_hand();
         h.outcome.winners[0].run_index = 2;
-        assert_violation(&h);
+        assert_violation(&h, "payout on invalid run 2");
+    }
+
+    #[test]
+    fn rejects_uncalled_return_while_betting_open() {
+        let mut h = valid_hand();
+        h.actions.swap(6, 7);
+        renumber(&mut h);
+        assert_violation(&h, "uncalled bet returned while betting was open");
+    }
+
+    #[test]
+    fn rejects_multi_run_board_where_runout_does_not_pay() {
+        let mut h = valid_hand();
+        h.players[0].starting_stack = dec!(0.30);
+        h.players[1].starting_stack = dec!(0.30);
+        h.actions = vec![
+            act(
+                0,
+                Street::Preflop,
+                "A",
+                ActionType::PostSmallBlind,
+                dec!(0.05),
+                dec!(0.05),
+            ),
+            act(
+                1,
+                Street::Preflop,
+                "Hero",
+                ActionType::PostBigBlind,
+                dec!(0.10),
+                dec!(0.10),
+            ),
+            act(2, Street::Preflop, "C", ActionType::Fold, dec!(0), dec!(0)),
+            act(
+                3,
+                Street::Preflop,
+                "A",
+                ActionType::Call,
+                dec!(0.05),
+                dec!(0.10),
+            ),
+            act(
+                4,
+                Street::Preflop,
+                "Hero",
+                ActionType::Check,
+                dec!(0),
+                dec!(0.10),
+            ),
+            StreetAction {
+                sequence: 5,
+                street: Street::Flop,
+                player_name: "A".into(),
+                action_type: ActionType::Bet,
+                amount: dec!(0.20),
+                street_total_after: dec!(0.20),
+                is_all_in: true,
+            },
+            StreetAction {
+                sequence: 6,
+                street: Street::Flop,
+                player_name: "Hero".into(),
+                action_type: ActionType::Call,
+                amount: dec!(0.20),
+                street_total_after: dec!(0.20),
+                is_all_in: true,
+            },
+        ];
+        h.boards = vec![
+            CommunityCards {
+                run_index: 1,
+                flop: Some([c("2c"), c("7d"), c("9h")]),
+                turn: Some(c("3s")),
+                river: Some(c("4c")),
+            },
+            CommunityCards {
+                run_index: 2,
+                flop: Some([c("2c"), c("7d"), c("9h")]),
+                turn: Some(c("3s")),
+                river: Some(c("5d")),
+            },
+        ];
+        h.outcome.total_pot = dec!(0.60);
+        h.outcome.uncalled_returned = dec!(0);
+        h.outcome.deductions[0].amount = dec!(0.01);
+        h.outcome.winners = vec![PotWinner {
+            player_name: "A".into(),
+            amount: dec!(0.59),
+            run_index: 1,
+        }];
+        assert_violation(&h, "every runout must award its share of the pot");
+    }
+
+    #[test]
+    fn check_keeps_right_to_raise_after_short_all_in() {
+        let mut h = valid_hand();
+        // A (seat 1, stack 10), Hero (seat 2, stack 0.15, BB), C (seat 3, stack 10, BTN)
+        h.players[1].starting_stack = dec!(0.15);
+        h.boards[0].turn = Some(c("3s"));
+        h.boards[0].river = Some(c("4c"));
+        h.actions = vec![
+            act(
+                0,
+                Street::Preflop,
+                "A",
+                ActionType::PostSmallBlind,
+                dec!(0.05),
+                dec!(0.05),
+            ),
+            act(
+                1,
+                Street::Preflop,
+                "Hero",
+                ActionType::PostBigBlind,
+                dec!(0.10),
+                dec!(0.10),
+            ),
+            act(
+                2,
+                Street::Preflop,
+                "C",
+                ActionType::Call,
+                dec!(0.10),
+                dec!(0.10),
+            ),
+            act(
+                3,
+                Street::Preflop,
+                "A",
+                ActionType::Call,
+                dec!(0.05),
+                dec!(0.10),
+            ),
+            act(
+                4,
+                Street::Preflop,
+                "Hero",
+                ActionType::Check,
+                dec!(0),
+                dec!(0.10),
+            ),
+            // Flop starts left of BTN (Seat 1: A)
+            act(5, Street::Flop, "A", ActionType::Check, dec!(0), dec!(0)),
+            StreetAction {
+                sequence: 6,
+                street: Street::Flop,
+                player_name: "Hero".into(),
+                action_type: ActionType::Bet,
+                amount: dec!(0.05),
+                street_total_after: dec!(0.05),
+                is_all_in: true,
+            },
+            act(
+                7,
+                Street::Flop,
+                "C",
+                ActionType::Call,
+                dec!(0.05),
+                dec!(0.05),
+            ),
+            act(
+                8,
+                Street::Flop,
+                "A",
+                ActionType::Raise,
+                dec!(0.10),
+                dec!(0.10),
+            ),
+            act(9, Street::Flop, "C", ActionType::Fold, dec!(0), dec!(0.05)),
+            act(
+                10,
+                Street::Flop,
+                "A",
+                ActionType::UncalledBetReturned,
+                dec!(0.05),
+                dec!(0.05),
+            ),
+        ];
+        h.outcome.total_pot = dec!(0.45);
+        h.outcome.uncalled_returned = dec!(0.05);
+        h.outcome.deductions[0].amount = dec!(0.01);
+        h.outcome.winners = vec![PotWinner {
+            player_name: "A".into(),
+            amount: dec!(0.44),
+            run_index: 0,
+        }];
+        validate_hand(&h).unwrap();
+    }
+
+    #[test]
+    fn rejects_cross_run_flop_duplicate_cards() {
+        let mut h = valid_hand();
+        h.boards = vec![
+            CommunityCards {
+                run_index: 1,
+                flop: Some([c("2c"), c("7d"), c("9h")]),
+                turn: Some(c("3s")),
+                river: Some(c("4c")),
+            },
+            CommunityCards {
+                run_index: 2,
+                flop: Some([c("2c"), c("8d"), c("Th")]),
+                turn: Some(c("Jh")),
+                river: Some(c("Qh")),
+            },
+        ];
+        h.players[0].starting_stack = dec!(0.10);
+        h.players[1].starting_stack = dec!(0.10);
+        h.actions = vec![
+            act(
+                0,
+                Street::Preflop,
+                "A",
+                ActionType::PostSmallBlind,
+                dec!(0.05),
+                dec!(0.05),
+            ),
+            StreetAction {
+                sequence: 1,
+                street: Street::Preflop,
+                player_name: "Hero".into(),
+                action_type: ActionType::PostBigBlind,
+                amount: dec!(0.10),
+                street_total_after: dec!(0.10),
+                is_all_in: true,
+            },
+            act(2, Street::Preflop, "C", ActionType::Fold, dec!(0), dec!(0)),
+            StreetAction {
+                sequence: 3,
+                street: Street::Preflop,
+                player_name: "A".into(),
+                action_type: ActionType::Call,
+                amount: dec!(0.05),
+                street_total_after: dec!(0.10),
+                is_all_in: true,
+            },
+        ];
+        h.outcome.total_pot = dec!(0.20);
+        h.outcome.uncalled_returned = dec!(0);
+        h.outcome.deductions[0].amount = dec!(0.01);
+        h.outcome.winners = vec![
+            PotWinner {
+                player_name: "Hero".into(),
+                amount: dec!(0.09),
+                run_index: 1,
+            },
+            PotWinner {
+                player_name: "Hero".into(),
+                amount: dec!(0.10),
+                run_index: 2,
+            },
+        ];
+        assert_eq!(
+            validate_hand(&h),
+            Err(ParseError::DuplicateCard { card: "2c".into() })
+        );
+    }
+
+    #[test]
+    fn rejects_small_blind_larger_than_big_blind() {
+        let mut h = valid_hand();
+        h.header.small_blind = dec!(0.20);
+        h.header.big_blind = dec!(0.10);
+        h.players[0].starting_stack = dec!(0.10);
+        h.actions = vec![
+            StreetAction {
+                sequence: 0,
+                street: Street::Preflop,
+                player_name: "A".into(),
+                action_type: ActionType::PostSmallBlind,
+                amount: dec!(0.10),
+                street_total_after: dec!(0.10),
+                is_all_in: true,
+            },
+            StreetAction {
+                sequence: 1,
+                street: Street::Preflop,
+                player_name: "Hero".into(),
+                action_type: ActionType::PostBigBlind,
+                amount: dec!(0.10),
+                street_total_after: dec!(0.10),
+                is_all_in: false,
+            },
+            act(2, Street::Preflop, "C", ActionType::Fold, dec!(0), dec!(0)),
+        ];
+        h.boards = vec![CommunityCards {
+            run_index: 0,
+            flop: Some([c("2c"), c("7d"), c("9h")]),
+            turn: Some(c("3s")),
+            river: Some(c("4c")),
+        }];
+        h.outcome.total_pot = dec!(0.20);
+        h.outcome.uncalled_returned = dec!(0);
+        h.outcome.deductions[0].amount = dec!(0.01);
+        h.outcome.winners = vec![PotWinner {
+            player_name: "Hero".into(),
+            amount: dec!(0.19),
+            run_index: 0,
+        }];
+        assert_violation(&h, "blinds must satisfy 0 < small blind <= big blind");
+    }
+
+    #[test]
+    fn rejects_multi_run_board_not_dealt_to_river() {
+        let mut h = valid_hand();
+        h.players[0].starting_stack = dec!(0.30);
+        h.players[1].starting_stack = dec!(0.30);
+        h.actions = vec![
+            act(
+                0,
+                Street::Preflop,
+                "A",
+                ActionType::PostSmallBlind,
+                dec!(0.05),
+                dec!(0.05),
+            ),
+            act(
+                1,
+                Street::Preflop,
+                "Hero",
+                ActionType::PostBigBlind,
+                dec!(0.10),
+                dec!(0.10),
+            ),
+            act(2, Street::Preflop, "C", ActionType::Fold, dec!(0), dec!(0)),
+            act(
+                3,
+                Street::Preflop,
+                "A",
+                ActionType::Call,
+                dec!(0.05),
+                dec!(0.10),
+            ),
+            act(
+                4,
+                Street::Preflop,
+                "Hero",
+                ActionType::Check,
+                dec!(0),
+                dec!(0.10),
+            ),
+            StreetAction {
+                sequence: 5,
+                street: Street::Flop,
+                player_name: "A".into(),
+                action_type: ActionType::Bet,
+                amount: dec!(0.20),
+                street_total_after: dec!(0.20),
+                is_all_in: true,
+            },
+            StreetAction {
+                sequence: 6,
+                street: Street::Flop,
+                player_name: "Hero".into(),
+                action_type: ActionType::Call,
+                amount: dec!(0.20),
+                street_total_after: dec!(0.20),
+                is_all_in: true,
+            },
+        ];
+        h.boards = vec![
+            CommunityCards {
+                run_index: 1,
+                flop: Some([c("2c"), c("7d"), c("9h")]),
+                turn: Some(c("3s")),
+                river: Some(c("4c")),
+            },
+            CommunityCards {
+                run_index: 2,
+                flop: Some([c("2c"), c("7d"), c("9h")]),
+                turn: Some(c("3s")),
+                river: None,
+            },
+        ];
+        h.outcome.total_pot = dec!(0.60);
+        h.outcome.uncalled_returned = dec!(0);
+        h.outcome.deductions[0].amount = dec!(0.01);
+        h.outcome.winners = vec![
+            PotWinner {
+                player_name: "A".into(),
+                amount: dec!(0.29),
+                run_index: 1,
+            },
+            PotWinner {
+                player_name: "Hero".into(),
+                amount: dec!(0.30),
+                run_index: 2,
+            },
+        ];
+        assert_violation(&h, "every multi-run board must be dealt to the river");
+    }
+
+    #[test]
+    fn rejects_positive_pot_with_no_winner() {
+        let mut h = valid_hand();
+        h.outcome.deductions[0].amount = dec!(0.20);
+        h.outcome.winners.clear();
+        assert_violation(&h, "pot has no winner");
+    }
+
+    #[test]
+    fn rejects_multi_run_board_not_sharing_cards_bet_on() {
+        let mut h = valid_hand();
+        h.players[0].starting_stack = dec!(0.30);
+        h.players[1].starting_stack = dec!(0.30);
+        h.actions = vec![
+            act(
+                0,
+                Street::Preflop,
+                "A",
+                ActionType::PostSmallBlind,
+                dec!(0.05),
+                dec!(0.05),
+            ),
+            act(
+                1,
+                Street::Preflop,
+                "Hero",
+                ActionType::PostBigBlind,
+                dec!(0.10),
+                dec!(0.10),
+            ),
+            act(2, Street::Preflop, "C", ActionType::Fold, dec!(0), dec!(0)),
+            act(
+                3,
+                Street::Preflop,
+                "A",
+                ActionType::Call,
+                dec!(0.05),
+                dec!(0.10),
+            ),
+            act(
+                4,
+                Street::Preflop,
+                "Hero",
+                ActionType::Check,
+                dec!(0),
+                dec!(0.10),
+            ),
+            act(5, Street::Flop, "A", ActionType::Check, dec!(0), dec!(0)),
+            act(6, Street::Flop, "Hero", ActionType::Check, dec!(0), dec!(0)),
+            StreetAction {
+                sequence: 7,
+                street: Street::Turn,
+                player_name: "A".into(),
+                action_type: ActionType::Bet,
+                amount: dec!(0.20),
+                street_total_after: dec!(0.20),
+                is_all_in: true,
+            },
+            StreetAction {
+                sequence: 8,
+                street: Street::Turn,
+                player_name: "Hero".into(),
+                action_type: ActionType::Call,
+                amount: dec!(0.20),
+                street_total_after: dec!(0.20),
+                is_all_in: true,
+            },
+        ];
+        h.boards = vec![
+            CommunityCards {
+                run_index: 1,
+                flop: Some([c("2c"), c("7d"), c("9h")]),
+                turn: Some(c("3s")),
+                river: Some(c("4c")),
+            },
+            CommunityCards {
+                run_index: 2,
+                flop: Some([c("2c"), c("7d"), c("9h")]),
+                turn: Some(c("3h")),
+                river: Some(c("5d")),
+            },
+        ];
+        h.outcome.total_pot = dec!(0.60);
+        h.outcome.uncalled_returned = dec!(0);
+        h.outcome.deductions[0].amount = dec!(0.01);
+        h.outcome.winners = vec![
+            PotWinner {
+                player_name: "A".into(),
+                amount: dec!(0.29),
+                run_index: 1,
+            },
+            PotWinner {
+                player_name: "Hero".into(),
+                amount: dec!(0.30),
+                run_index: 2,
+            },
+        ];
+        assert_violation(&h, "runout 2 does not share turn with first runout");
     }
 
     fn renumber(h: &mut CanonicalHand) {

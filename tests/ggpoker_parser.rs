@@ -1796,12 +1796,158 @@ fn v3_6_audit_refusals() {
     ));
 
     // Spec s9: an EV Cashout in a multi-run hand.
-    let multi_run_cashout = RIT_TWICE_TURN.replace(
-        "53be55c0: shows [9s 9c] (three of a kind, Nines)\n",
-        "53be55c0: shows [9s 9c] (three of a kind, Nines)\n53be55c0: Chooses to EV Cashout\n",
+    let multi_run_cashout = RIT_TWICE_TURN
+        .replace(
+            "53be55c0: shows [9s 9c] (three of a kind, Nines)\n",
+            "53be55c0: shows [9s 9c] (three of a kind, Nines)\n53be55c0: Chooses to EV Cashout\n",
+        )
+        .replace(
+            "*** FIRST SHOWDOWN ***",
+            "53be55c0: Receives Cashout ($5)\n*** FIRST SHOWDOWN ***",
+        )
+        .replace(
+            "Seat 3: 53be55c0 (button) showed [9s 9c] and lost with a full house, Nines full of Kings, and lost",
+            "Seat 3: 53be55c0 (button) showed [9s 9c] and lost with a full house, Nines full of Kings, and lost, EV Cashout ($5)",
+        );
+    match parse_err(&multi_run_cashout) {
+        ParseError::UnsupportedAdjustment { content, .. } => {
+            assert!(
+                content.contains("EV Cashout in split pot or multi-run hand is unsupported"),
+                "expected multi-run refusal message, got: {content}"
+            );
+        }
+        other => panic!("expected UnsupportedAdjustment, got: {other:?}"),
+    }
+}
+
+#[test]
+fn amounts_exact_and_at_most_two_decimals() {
+    let three_decimals = HU_SHOWDOWN.replace("Hero ($13.8 in chips)", "Hero ($13.801 in chips)");
+    match parse_err(&three_decimals) {
+        ParseError::UnrecognizedLine { content, .. } => {
+            assert!(
+                content.contains("13.801"),
+                "expected content to contain 13.801, got: {content}"
+            );
+        }
+        other => panic!("expected UnrecognizedLine, got: {other:?}"),
+    }
+
+    let twenty_nine_decimals = HU_SHOWDOWN.replace(
+        "Hero ($13.8 in chips)",
+        "Hero ($13.8000000000000000000000000001 in chips)",
     );
-    assert!(matches!(
-        parse_err(&multi_run_cashout),
-        ParseError::UnsupportedAdjustment { .. }
-    ));
+    match parse_err(&twenty_nine_decimals) {
+        ParseError::UnrecognizedLine { content, .. } => {
+            assert!(
+                content.contains("13.8000000000000000000000000001"),
+                "expected content to contain 13.8000000000000000000000000001, got: {content}"
+            );
+        }
+        other => panic!("expected UnrecognizedLine, got: {other:?}"),
+    }
+}
+
+#[test]
+fn heads_up_button_must_be_seated_and_post_small_blind() {
+    let unseated_btn = HU_SHOWDOWN
+        .replace("Seat #6 is the button", "Seat #1 is the button")
+        .replace("445e6868: posts small blind $0.05\n", "")
+        .replace("445e6868: calls $0.05", "445e6868: calls $0.1")
+        .replace("445e6868 (small blind) showed", "445e6868 showed");
+    match parse_err(&unseated_btn) {
+        ParseError::SummaryMismatch { detail, .. } => {
+            assert!(
+                detail.contains("heads-up button must be seated and post the small blind"),
+                "expected button seated and post SB message, got: {detail}"
+            );
+        }
+        other => panic!("expected SummaryMismatch, got: {other:?}"),
+    }
+}
+
+#[test]
+fn ggpoker_parser_refuses_preflop_ev_cashout() {
+    let preflop_co = EV_CASHOUT_FLOP.replace(
+        "*** FLOP *** [Kc Jd 4s]\n62688fe9: Chooses to EV Cashout\n",
+        "62688fe9: Chooses to EV Cashout\n*** FLOP *** [Kc Jd 4s]\n",
+    );
+    match parse_err(&preflop_co) {
+        ParseError::UnsupportedAdjustment { content, .. } => {
+            assert!(
+                content.contains("62688fe9: Chooses to EV Cashout"),
+                "expected preflop cashout line in content, got: {content}"
+            );
+        }
+        other => panic!("expected UnsupportedAdjustment, got: {other:?}"),
+    }
+}
+
+#[test]
+fn multi_run_runouts_keep_cards_bet_on_and_refuse_duplicate_board_lines() {
+    let rit_redeal = RIT_TWICE_TURN
+        .replace(
+            "*** SECOND RIVER *** [9h Kc 6d Js] [Kh]",
+            "*** SECOND FLOP *** [2c 3c 4c]\n*** SECOND TURN *** [2c 3c 4c] [5c]\n*** SECOND RIVER *** [2c 3c 4c 5c] [Kh]",
+        )
+        .replace("SECOND Board [Kh]", "SECOND Board [2c 3c 4c 5c Kh]");
+    match parse_err(&rit_redeal) {
+        ParseError::IncompleteStreet { attempted, .. } => {
+            assert!(
+                attempted.contains("SECOND FLOP"),
+                "expected IncompleteStreet attempting SECOND FLOP, got: {attempted}"
+            );
+        }
+        other => panic!("expected IncompleteStreet, got: {other:?}"),
+    }
+
+    let rit_dup_board = RIT_TWICE_TURN.replace("SECOND Board [Kh]", "FIRST Board [Ks]");
+    match parse_err(&rit_dup_board) {
+        ParseError::UnrecognizedLine { content, .. } => {
+            assert!(
+                content.contains("FIRST Board [Ks]"),
+                "expected UnrecognizedLine containing FIRST Board [Ks], got: {content}"
+            );
+        }
+        other => panic!("expected UnrecognizedLine, got: {other:?}"),
+    }
+}
+
+#[test]
+fn leniencies_card_casing_and_shows_and_repeat_position_labels() {
+    let uppercase_suit = HU_SHOWDOWN.replace("Dealt to Hero [2d Jh]", "Dealt to Hero [2D Jh]");
+    match parse_err(&uppercase_suit) {
+        ParseError::InvalidCardSyntax { token } => {
+            assert_eq!(token, "2D");
+        }
+        other => panic!("expected InvalidCardSyntax, got: {other:?}"),
+    }
+
+    let bonus_shows = HU_SHOWDOWN.replace(
+        "445e6868: shows [4c Tc] (a pair of Fours)",
+        "445e6868: shows [4c Tc] (a pair of Fours) and collects $9 (bonus)",
+    );
+    match parse_err(&bonus_shows) {
+        ParseError::UnrecognizedLine { content, .. } => {
+            assert!(
+                content.contains("and collects $9 (bonus)"),
+                "expected UnrecognizedLine with bonus text, got: {content}"
+            );
+        }
+        other => panic!("expected UnrecognizedLine, got: {other:?}"),
+    }
+
+    let repeated_label = HU_SHOWDOWN.replace(
+        "Seat 3: Hero (big blind) showed",
+        "Seat 3: Hero (big blind) (big blind) showed",
+    );
+    match parse_err(&repeated_label) {
+        ParseError::UnrecognizedLine { content, .. } => {
+            assert!(
+                content.contains("(big blind) (big blind)"),
+                "expected UnrecognizedLine with repeated label, got: {content}"
+            );
+        }
+        other => panic!("expected UnrecognizedLine, got: {other:?}"),
+    }
 }

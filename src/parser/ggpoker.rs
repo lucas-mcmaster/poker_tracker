@@ -34,7 +34,7 @@ fn compile_static_regex(pattern: &'static str) -> Regex {
 
 macro_rules! amt {
     () => {
-        r"[0-9]+(?:\.[0-9]+)?"
+        r"[0-9]+(?:\.[0-9]{1,2})?"
     };
 }
 
@@ -118,7 +118,7 @@ static RE_RAISE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static RE_SHOWS: LazyLock<Regex> = LazyLock::new(|| {
-    compile_static_regex(r"^(?P<name>.+?): shows \[(?P<cards>[^\]]+)\](?: \(.*\))?$")
+    compile_static_regex(r"^(?P<name>.+?): shows \[(?P<cards>[^\]]+)\](?: \([^()]*\))?$")
 });
 
 static RE_UNCALLED: LazyLock<Regex> = LazyLock::new(|| {
@@ -292,12 +292,21 @@ fn cap<'h>(caps: &regex::Captures<'h>, name: &str) -> &'h str {
 }
 
 fn parse_decimal(raw: &str) -> Result<Decimal, ParseError> {
-    Decimal::from_str(raw).map_err(|_| ParseError::InvalidAmount {
+    Decimal::from_str_exact(raw).map_err(|_| ParseError::InvalidAmount {
         raw: raw.to_string(),
     })
 }
 
 fn parse_card_token(token: &str) -> Result<Card, ParseError> {
+    let bytes = token.as_bytes();
+    let is_observed = bytes.len() == 2
+        && matches!(bytes[0], b'2'..=b'9' | b'T' | b'J' | b'Q' | b'K' | b'A')
+        && matches!(bytes[1], b'c' | b'd' | b'h' | b's');
+    if !is_observed {
+        return Err(ParseError::InvalidCardSyntax {
+            token: token.to_string(),
+        });
+    }
     Card::from_str(token).map_err(|_| ParseError::InvalidCardSyntax {
         token: token.to_string(),
     })
@@ -772,8 +781,10 @@ impl HandState {
         if let Some(caps) = RE_EV_CHOOSE.captures(line) {
             let name = cap(&caps, "name");
             self.ensure_seated(name)?;
-            // A cashout is offered only while cards are still to come, and only once.
-            if street == Street::River || self.cashouts.iter().any(|c| c.player_name == name) {
+            // A cashout is offered only while cards are still to come (Flop or Turn), and only once.
+            if !matches!(street, Street::Flop | Street::Turn)
+                || self.cashouts.iter().any(|c| c.player_name == name)
+            {
                 return Err(ParseError::UnsupportedAdjustment {
                     line: line_idx,
                     content: line.to_string(),
@@ -992,6 +1003,9 @@ impl HandState {
 
         if let Some(caps) = RE_SUMMARY_BOARD.captures(line) {
             let run = run_index_from_word(caps.name("run").map(|m| m.as_str()));
+            if self.summary.board_lines.iter().any(|(r, _)| *r == run) {
+                return Err(unrecognized());
+            }
             let cards = parse_card_list(cap(&caps, "cards"))?;
             self.summary.board_lines.push((run, cards));
             return Ok(());
@@ -1031,10 +1045,13 @@ impl HandState {
             };
             let mut tail = after_name;
             while let Some(m) = RE_SEAT_LABEL.captures(tail) {
-                match cap(&m, "label") {
-                    "button" => summary.button = true,
-                    "small blind" => summary.small_blind = true,
-                    _ => summary.big_blind = true,
+                let duplicate = match cap(&m, "label") {
+                    "button" => std::mem::replace(&mut summary.button, true),
+                    "small blind" => std::mem::replace(&mut summary.small_blind, true),
+                    _ => std::mem::replace(&mut summary.big_blind, true),
+                };
+                if duplicate {
+                    return Err(unrecognized());
                 }
                 let consumed = m.get(0).map_or(0, |whole| whole.end());
                 tail = tail.get(consumed..).unwrap_or("");
@@ -1188,6 +1205,8 @@ impl HandState {
         // Runouts.
         let multi = self.boards.iter().any(|b| b.run_index > 0);
 
+        // In a multi-run hand, self.winners.len() is always >= 2 (at least one winner per runout),
+        // so `multi` is logically subsumed, but kept explicit for clarity of intent.
         if !self.cashouts.is_empty() && (self.winners.len() > 1 || multi) {
             return Err(ParseError::UnsupportedAdjustment {
                 line: last_line_idx,
@@ -1330,6 +1349,23 @@ impl HandState {
             >= 2;
         let runs = self.boards.len().max(1);
         let flop_dealt = self.boards.iter().any(|b| b.flop.is_some());
+        let heads_up = self.players.len() == 2;
+        if heads_up {
+            let button_posted_sb = self
+                .players
+                .iter()
+                .find(|p| p.seat == header.button_seat)
+                .is_some_and(|bp| {
+                    self.actions.iter().any(|a| {
+                        a.player_name == bp.name && a.action_type == ActionType::PostSmallBlind
+                    })
+                });
+            if !button_posted_sb {
+                return Err(mismatch(
+                    "heads-up button must be seated and post the small blind".to_string(),
+                ));
+            }
+        }
         for p in &self.players {
             let seat_line = s
                 .seat_summaries
@@ -1343,7 +1379,6 @@ impl HandState {
             let posted_small = own
                 .iter()
                 .any(|a| a.action_type == ActionType::PostSmallBlind);
-            let heads_up = self.players.len() == 2;
             if heads_up && (p.seat == header.button_seat) != posted_small {
                 return Err(mismatch(format!(
                     "heads-up button and small blind poster differ ('{}')",
@@ -1434,7 +1469,10 @@ impl HandState {
             "FLOP" => {
                 let valid = (phase == ParserPhase::Play(Street::Preflop) && run_index <= 1)
                     || (phase == ParserPhase::Play(Street::River) && run_index > 1);
-                if !valid || self.boards.iter().any(|b| b.run_index == run_index) {
+                if !valid
+                    || (run_index > 1 && self.actions.iter().any(|a| a.street == Street::Flop))
+                    || self.boards.iter().any(|b| b.run_index == run_index)
+                {
                     return Err(fail());
                 }
                 if caps.name("b2").is_some() {
@@ -1451,6 +1489,12 @@ impl HandState {
                 } else {
                     Street::River
                 };
+                if street == Street::Turn
+                    && run_index > 1
+                    && self.actions.iter().any(|a| a.street == Street::Turn)
+                {
+                    return Err(fail());
+                }
                 prepare_board_for_street(&mut self.boards, run_index, street);
                 let prev_street = if street == Street::Turn {
                     Street::Flop
