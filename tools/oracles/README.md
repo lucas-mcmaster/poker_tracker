@@ -46,9 +46,10 @@ find which one departs from `docs/stats.md`.
 It also runs on a database holding only the v3.6 folder (the database SPEC_v3.7 §6 pins its
 reports on); sections for the missing file then print a note.
 
-Last run: 2026-11-02, after the pre-M13 amendments (SPEC_v3.7 §11: walks and PFR opportunities,
-session `platform` and `duration_seconds`), on the 1,283 hands of `tests/fixtures/ggpoker/` plus
-HD145319803, and on the v3.6 folder alone (Python 3.13, eval7 0.1.11).
+Last run: 2026-11-03, at `f385c63` (v3.7 complete, `STATS_VERSION` 4), on the 1,283 hands of
+`tests/fixtures/ggpoker/` plus HD145319803 (Python 3.13, eval7 0.1.11): `compare_cache.py
+--equity` found no difference over 6,846 player-hands × 77 columns, and `v3_7_oracle.py --equity`
+printed every number SPEC_v3.7 pins.
 
 ## `equity_spots.py` (the `exact_equity` regression fixture)
 

@@ -726,7 +726,7 @@ def main():
         hs = [h for h in corpus if h["file"] == f]
         qq = [h for h in hs if qualification(h)[0]]
         hin = sum(1 for h in qq if hero(h)["name"] in all_in_ev(h)["players"])
-        print(f"  {f[:24]:<24} qualifying={len(qq)} hero_in={hin} net={money(sum(hero(h)['net'] for h in hs))}"
+        print(f"  {f} qualifying={len(qq)} hero_in={hin} net={money(sum(hero(h)['net'] for h in hs))}"
               f" ev_net={money(sum(ev_net(h, all_in_ev(h))[hero(h)['name']] for h in hs))}")
     print("  " + results_row(v36, True))
     print("  v3.5 file: " + results_row(v35, True))
