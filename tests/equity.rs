@@ -18,7 +18,7 @@ use common::{
     EV_CASHOUT, EV_CASHOUT_CALLER, EV_CASHOUT_FLOP, EV_CASHOUT_RECEIVED, FOUR_WAY_ALL_IN,
     SAMPLE_SESSION, THREE_WAY_ALL_IN_SIDE_POT, gg,
 };
-use poker_tracker::domain::{ActionType, Card, CommunityCards, Street};
+use poker_tracker::domain::{ActionType, CanonicalHand, Card, CommunityCards, Street};
 use poker_tracker::parser::HandParser;
 use poker_tracker::report::{ReportKind, ReportOptions, write_report};
 use poker_tracker::stats::{derive_hand_stats, exact_equity};
@@ -26,6 +26,11 @@ use support::{make_action, make_canonical_hand, make_player};
 
 fn card(s: &str) -> Card {
     Card::from_str(s).unwrap()
+}
+
+/// The pot after all deductions, `total_pot − Σ deductions` (`stats.md` §6.2), from the hand.
+fn pot_after_all_deductions(h: &CanonicalHand) -> Decimal {
+    h.outcome.total_pot - h.outcome.checked_total_deductions().unwrap()
 }
 
 // ============================================================================
@@ -216,6 +221,11 @@ fn four_real_ev_cashout_hands() {
     );
     // Verify cashout ratio on turn
     let pot_after1 = dec!(4.46);
+    assert_eq!(
+        pot_after_all_deductions(&h1),
+        pot_after1,
+        "pot basis (§10 decision 4)"
+    );
     let cashout1 = dec!(3.8);
     let ratio1 = cashout1 / (pot_after1 * Decimal::from(19) / Decimal::from(22));
     assert!(
@@ -256,6 +266,11 @@ fn four_real_ev_cashout_hands() {
         "cashing player flop equity 857/990"
     );
     let pot_after2 = dec!(3.78);
+    assert_eq!(
+        pot_after_all_deductions(&h2),
+        pot_after2,
+        "pot basis (§10 decision 4)"
+    );
     let cashout2 = dec!(3.23);
     let ratio2 = cashout2 / (pot_after2 * Decimal::from(857) / Decimal::from(990));
     assert!(
@@ -294,6 +309,11 @@ fn four_real_ev_cashout_hands() {
     .unwrap();
     assert_eq!(turn_eq3[0], (37, 44), "cashing player turn equity 37/44");
     let pot_after3 = dec!(2.81);
+    assert_eq!(
+        pot_after_all_deductions(&h3),
+        pot_after3,
+        "pot basis (§10 decision 4)"
+    );
     let cashout3 = dec!(2.33); // 2.81 payout - 0.48 risk paid = 2.33
     let ratio3 = cashout3 / (pot_after3 * Decimal::from(37) / Decimal::from(44));
     assert!(
@@ -325,6 +345,11 @@ fn four_real_ev_cashout_hands() {
     );
 
     let pot_after4 = dec!(9.93);
+    assert_eq!(
+        pot_after_all_deductions(&h4),
+        pot_after4,
+        "pot basis (§10 decision 4)"
+    );
     let cashout4 = dec!(6.87);
     let ratio4 = cashout4 / (pot_after4 * Decimal::from(346) / Decimal::from(495));
     assert!(
@@ -1059,6 +1084,8 @@ fn canonical_folded_player_known_cards_does_not_change_equity() {
     h2.outcome.total_pot = dec!(20.00);
     let s2 = derive_hand_stats(&h2);
 
+    // Ah As vs Kc Kd preflop is SPEC §7.2's first row, with or without the folder's cards
+    assert_eq!((s1[0].ev_equity_num, s1[0].ev_equity_den), (29603, 36432));
     assert_eq!(
         (s1[0].ev_equity_num, s1[0].ev_equity_den),
         (s2[0].ev_equity_num, s2[0].ev_equity_den),
@@ -1255,21 +1282,16 @@ fn exact_equity_four_way_preflop() {
         [card("Jh"), card("Jd")],
     ];
     let equities = exact_equity(&hole_cards, &[]).unwrap();
-    assert_eq!(equities.len(), 4);
 
-    // Sum of equity fractions must equal exactly 1
-    let sum_equity: Decimal = equities
-        .iter()
-        .map(|&(num, den)| Decimal::from(num) / Decimal::from(den))
-        .sum();
-    assert_eq!(sum_equity, Decimal::ONE, "4-way equities sum to 1");
-
-    // Aces > Kings > Queens > Jacks
-    let p0 = Decimal::from(equities[0].0) / Decimal::from(equities[0].1);
-    let p1 = Decimal::from(equities[1].0) / Decimal::from(equities[1].1);
-    let p2 = Decimal::from(equities[2].0) / Decimal::from(equities[2].1);
-    let p3 = Decimal::from(equities[3].0) / Decimal::from(equities[3].1);
-    assert!(p0 > p1, "Aces beat Kings in equity");
-    assert!(p1 > p2, "Kings beat Queens in equity");
-    assert!(p2 > p3, "Queens beat Jacks in equity");
+    // From eval7 (reviewer), enumerating all C(44, 5) = 1,086,008 boards. Over that
+    // denominator they are 595260 + 186735 + 165856 + 138157 = 1086008, exactly 1.
+    assert_eq!(
+        equities,
+        vec![
+            (148_815, 271_502),
+            (186_735, 1_086_008),
+            (20_732, 135_751),
+            (138_157, 1_086_008),
+        ]
+    );
 }

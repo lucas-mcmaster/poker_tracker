@@ -402,13 +402,15 @@ pub fn derive_hand_stats(hand: &CanonicalHand) -> Vec<PlayerHandStats> {
     stats
 }
 
+/// `prod / den` rounded half-even to an integer. Floor division (`div_euclid`) keeps the
+/// remainder non-negative, so negative quotients round correctly too. `0` when `den <= 0`.
 #[inline]
 fn round_half_even_quotient(prod: i128, den: i128) -> i128 {
-    if den == 0 {
+    if den <= 0 {
         return 0;
     }
-    let q = prod / den;
-    let r = prod % den;
+    let q = prod.div_euclid(den);
+    let r = prod.rem_euclid(den);
     let double_r = r.saturating_mul(2);
     if double_r < den {
         q
@@ -577,6 +579,38 @@ fn compute_all_in_equity(
             s.ev_net_micros = ev_won
                 .saturating_sub(invested_micros)
                 .saturating_add(adjustments_micros);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::round_half_even_quotient;
+
+    #[test]
+    fn round_half_even_quotient_rounds_midpoints_to_even() {
+        // (prod, den, expected): exact, below, above and at the midpoint, both signs
+        for (prod, den, expected) in [
+            (0, 7, 0),
+            (8, 4, 2),
+            (9, 4, 2),   // 2.25
+            (11, 4, 3),  // 2.75
+            (1, 2, 0),   // 0.5 -> 0
+            (3, 2, 2),   // 1.5 -> 2
+            (5, 2, 2),   // 2.5 -> 2
+            (7, 2, 4),   // 3.5 -> 4
+            (-1, 2, 0),  // -0.5 -> 0
+            (-3, 2, -2), // -1.5 -> -2
+            (-5, 2, -2), // -2.5 -> -2
+            (-3, 4, -1), // -0.75 -> -1
+            (-1, 4, 0),  // -0.25 -> 0
+            (5, 0, 0),
+        ] {
+            assert_eq!(
+                round_half_even_quotient(prod, den),
+                expected,
+                "{prod} / {den}"
+            );
         }
     }
 }

@@ -234,17 +234,19 @@ lifecycle contract is `docs/SPEC_v3.7.md` §2 and the report contract §6.
      amounts): a single pot. Multiway all-ins with side pots are excluded.
   When any condition fails, the hand does not qualify (`ev_qualified = 0`, equity `0/1`,
   `ev_net_micros = net_micros`).
-- **Board and deck rule.** Equity enumerates every completion of the board cards dealt by the all-in
-  street (preflop: 0; flop: 3; turn: 4; for multi-run hands, the first run's cards up to that street).
-  Only the board cards and the **live players'** hole cards are removed from the deck; a folded
-  player's cards remain in the deck even when known. A runout won by `k` players awards `1/k`.
-  Multi-run hands evaluate identical equity on the first run's board.
-- **Pot basis.** The equity applies to the pot after **all** deductions: `total_pot − Σ all deductions`
-  (= `Σ payouts`).
-- **EV Cashout rule.** A player who chose EV Cashout keeps their actual net (`ev_net_micros = net_micros`).
-  Their opponents are adjusted normally.
-- **Rounding and stored columns.** `ev_net_micros = round_half_even(num × pot_after / den) − invested + adjustments`
-  (one half-even rounding to micro-units, with `i128` products). When not qualified or when the
+- **Board and deck rule.** Equity enumerates every completion of the board cards dealt by the
+  all-in street (preflop: 0; flop: 3; turn: 4; for multi-run hands, the first run's cards up to
+  that street). Only the board cards and the **live players'** hole cards are removed from the
+  deck; a folded player's cards remain in the deck even when known. A runout won by `k` players
+  awards `1/k`. Running it more than once does not change the expectation, so multi-run hands
+  use the same rule.
+- **Pot basis.** The equity applies to the pot after **all** deductions:
+  `total_pot − Σ all deductions` (= `Σ payouts`).
+- **EV Cashout rule.** A player who chose EV Cashout keeps their actual net
+  (`ev_net_micros = net_micros`). Their opponents are adjusted normally.
+- **Rounding and stored columns.**
+  `ev_net_micros = round_half_even(num × pot_after / den) − invested + adjustments` (one
+  half-even rounding to micro-units, with `i128` products). When not qualified or when the
   player took EV Cashout, `ev_net_micros` equals `net_micros`. Equity is stored as the reduced
   fraction `(ev_equity_num, ev_equity_den)` in lowest terms (`0/1` when not qualified).
 
