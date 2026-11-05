@@ -296,4 +296,61 @@ mod tests {
             ReportError::ArithmeticOverflow { figure: "net" }
         ));
     }
+
+    fn field_of_totals<'a>(t: &'a mut ResultTotals, figure: &str) -> &'a mut i64 {
+        match figure {
+            "hands" => &mut t.hands,
+            "net" => &mut t.net_micros,
+            "rake" => &mut t.rake_micros,
+            "fees" => &mut t.fees_micros,
+            "blinds" => &mut t.blinds_micros,
+            "straddles" => &mut t.straddles_micros,
+            "allin_hands" => &mut t.allin_hands,
+            "ev_net" => &mut t.ev_net_micros,
+            _ => panic!("unknown figure {figure}"),
+        }
+    }
+
+    /// Every total names the CSV column it feeds, and sums its own field.
+    #[test]
+    fn every_results_total_overflow_names_its_column() {
+        let zero = StakeGroup {
+            small_blind_micros: 50_000,
+            big_blind_micros: 100_000,
+            hands: 0,
+            net_micros: 0,
+            rake_micros: 0,
+            fees_micros: 0,
+            blinds_micros: 0,
+            straddles_micros: 0,
+            allin_hands: 0,
+            ev_net_micros: 0,
+        };
+        type Field = fn(&mut StakeGroup) -> &mut i64;
+        let fields: [(&str, Field); 8] = [
+            ("hands", |g| &mut g.hands),
+            ("net", |g| &mut g.net_micros),
+            ("rake", |g| &mut g.rake_micros),
+            ("fees", |g| &mut g.fees_micros),
+            ("blinds", |g| &mut g.blinds_micros),
+            ("straddles", |g| &mut g.straddles_micros),
+            ("allin_hands", |g| &mut g.allin_hands),
+            ("ev_net", |g| &mut g.ev_net_micros),
+        ];
+        for (figure, field) in fields {
+            let (mut g1, mut g2) = (zero, zero);
+            *field(&mut g1) = i64::MAX;
+            *field(&mut g2) = 1;
+            let err = aggregate_result_totals(&[g1, g2]).unwrap_err();
+            assert!(
+                matches!(err, ReportError::ArithmeticOverflow { figure: f } if f == figure),
+                "{figure}: got {err:?}"
+            );
+            assert_eq!(aggregate_result_totals(&[g1]).unwrap(), {
+                let mut t = ResultTotals::default();
+                *field_of_totals(&mut t, figure) = i64::MAX;
+                t
+            });
+        }
+    }
 }

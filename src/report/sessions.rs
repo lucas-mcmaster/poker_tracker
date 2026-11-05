@@ -288,6 +288,16 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn sessions_total_ev_net_overflow_returns_error() {
+        let err = aggregate_session_net([(0, i64::MAX), (0, 1)]).unwrap_err();
+        assert!(matches!(
+            err,
+            ReportError::ArithmeticOverflow { figure: "ev_net" }
+        ));
+        assert_eq!(aggregate_session_net([(1, -2), (3, -4)]).unwrap(), (4, -6));
+    }
+
     fn hand(platform: &str, table: &str, id: &str, ts: &str, offset: Option<i64>) -> HandEntry {
         hand_in(platform, "CAD", table, id, ts, offset)
     }

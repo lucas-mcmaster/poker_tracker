@@ -17,6 +17,7 @@ History only, never a specification. The current spec and living rules are liste
 ## v3.7.1 → v3.8
 
 - **M17.1 (Column specs, one selection, checked report totals):** `ColumnSpec`/`ColumnKind`/`COLUMN_SPECS`/`column_spec` define metadata for all 76 stats cache columns (with storage `CHECK`s driven by `signed`); stats report sums and maps columns by name; reports and stakes probe unify under one `Selection` fragment; report totals in all four reports use checked addition; `Stakes` moves to `domain::money`.
+- **M17.1 review:** the stakes condition uses row values (`IN (VALUES …)`), so a stakes list of 994 or more items no longer exceeds SQLite's expression depth; every name the stats report reads is in a checked table (`STAT_TABLE` with a `Denominator`, `AGGRESSION_STREETS`) and its sums are read fail-closed; tests for the empty stakes list, the fragment, and the `figure` of every checked total.
 
 ## v3.7 → v3.7.1
 

@@ -261,6 +261,8 @@ in `docs/stats.md` depends on this policy.
   - Items are compared numerically with the stored blinds (`0.05/0.10` selects the stakes
     printed `0.05/0.1`), in every currency, and currencies stay separate.
   - A repeated item counts once. An item that matches no hero hand is reported, not an error.
+  - The list has no length limit of its own (`ReportOptions::stakes` with 2,000 items works); an
+    empty list (API only; the CLI refuses it) selects no hand.
   - Every report covers only the selected hands, and sessions are formed from them.
   - Together with the `results` rows per stakes and the `ALL` rows, this gives results by stakes,
     for all stakes combined, and for any combination of stakes.

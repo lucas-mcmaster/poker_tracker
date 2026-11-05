@@ -218,4 +218,54 @@ mod tests {
             ReportError::ArithmeticOverflow { figure: "hands" }
         ));
     }
+
+    /// Every merged count names the CSV column it feeds (`p_walk` feeds the VPIP denominator).
+    #[test]
+    fn every_positions_merge_overflow_names_its_column() {
+        // Argument order of `add_group`, without `bb_micros` (index 2), which sums nothing.
+        let figures = [
+            (0, "hands"),
+            (1, "net"),
+            (3, "vpip"),
+            (4, "vpip"),
+            (5, "pfr"),
+            (6, "pfr"),
+            (7, "rfi"),
+            (8, "rfi"),
+        ];
+        let add = |entry: &mut PositionAgg, v: [i64; 9]| {
+            entry.add_group(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8])
+        };
+        for (index, figure) in figures {
+            let mut big = [0; 9];
+            let mut one = [0; 9];
+            big[2] = 100_000;
+            one[2] = 100_000;
+            big[index] = i64::MAX;
+            one[index] = 1;
+            let mut entry = PositionAgg::default();
+            add(&mut entry, big).unwrap();
+            let err = add(&mut entry, one).unwrap_err();
+            assert!(
+                matches!(err, ReportError::ArithmeticOverflow { figure: f } if f == figure),
+                "argument {index}: expected {figure}, got {err:?}"
+            );
+        }
+        let mut entry = PositionAgg::default();
+        add(&mut entry, [1, 2, 100_000, 3, 4, 5, 6, 7, 8]).unwrap();
+        add(&mut entry, [10, 20, 100_000, 30, 40, 50, 60, 70, 80]).unwrap();
+        assert_eq!(
+            [
+                entry.hands,
+                entry.net_micros,
+                entry.p_walk,
+                entry.p_vpip,
+                entry.p_pfr_opp,
+                entry.p_pfr,
+                entry.p_rfi_opp,
+                entry.p_rfi
+            ],
+            [11, 22, 33, 44, 55, 66, 77, 88]
+        );
+    }
 }

@@ -164,7 +164,7 @@ rules, are in `docs/invariants.md` §1 and §2.
   line)`; view `quarantine_pending` (quarantined texts not stored as a hand);
   `derived_cache(name, version, built_at)`; the cache table `hand_player_stats` (created by the
   rebuild, not by `MIGRATIONS`, with `idx_hand_player_stats_player(player_id, hand_id)`;
-  `CHECK (<col> >= 0)` constraints driven by `COLUMN_SPECS.signed`).
+  `CHECK (<col> >= 0)` on every column of `COLUMN_SPECS` that is not `signed`).
 - **Inserts:** one `BEGIN IMMEDIATE` transaction per batch, one savepoint per hand, 5 s busy
   timeout (`DEFAULT_BUSY_TIMEOUT`). Validation, conversion, conflict and constraint errors reject
   that hand (`BatchInsertStats::rejected`); lock, I/O and other database-wide errors return
@@ -257,8 +257,9 @@ rules, are in `docs/invariants.md` §1 and §2.
   `Count`, `Money`, `EquityNumerator`, `EquityDenominator`), and `signed` flag in schema order.
   `column_spec(name)` looks up a spec by name.
 - `pub const COLUMNS: &[&str]` lists every counter and stored money/equity column of
-  `docs/stats.md` in schema order (equal to `COLUMN_SPECS` names). It is the single source for the
-  `hand_player_stats` schema.
+  `docs/stats.md` in schema order: the names of `COLUMN_SPECS`, which one macro emits with it.
+  The two are the single source for the `hand_player_stats` schema (`COLUMN_SPECS` for the
+  `CREATE`, `COLUMNS` for the insert).
   `PlayerHandStats` exposes the player name, `position: Option<u8>` (codes of `stats.md` §2) and
   each column by name: `fn get(&self, column: &str) -> Option<i64>`.
 - `pub fn exact_equity(hole_cards: &[[Card; 2]], board: &[Card]) -> Option<Vec<(u64, u64)>>`:
@@ -275,7 +276,12 @@ rules, are in `docs/invariants.md` §1 and §2.
 
 - Every report query, and the unmatched-stakes probe, use one selection fragment
   (`report::selection::selection`) joining `hands h`, `hand_players hp` and `hand_player_stats hps`,
-  with aliases `h`, `hp`, and `hps`.
+  with aliases `h`, `hp`, and `hps`. Its stakes condition is
+  `(h.small_blind_micros, h.big_blind_micros) IN (VALUES (?, ?), …)` (`1` for no selection, `0`
+  for an empty list), whose depth does not grow with the list.
+- The stats report reads every name it uses from two constant tables, `STAT_TABLE` (stat,
+  numerator column, `Denominator`) and `AGGRESSION_STREETS` (the AF and AFq columns per street),
+  and a unit test checks each name is a `Flag` or `Count` column.
 - `ReportKind::{Results, Positions, Sessions, Stats}`.
 - `ReportOptions { stakes: Option<Vec<Stakes>> }`: `None` (the `Default`) means every stake. M17
   filters will subsume it; until then it is the only selection.

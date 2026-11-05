@@ -34,134 +34,188 @@ impl StatsRow {
 
 use std::collections::HashMap;
 
-pub(crate) const STAT_TABLE: &[(&str, &str, &str)] = &[
-    ("vpip", "p_vpip", "hands"),
-    ("pfr", "p_pfr", "p_pfr_opp"),
-    ("saw_flop", "f_saw", "hands"),
-    ("wtsd", "sd_went", "f_saw"),
-    ("wsd", "sd_won", "sd_went"),
-    ("wwsf", "f_saw_won", "f_saw"),
-    ("win", "won_hand", "hands"),
-    ("rfi", "p_rfi", "p_rfi_opp"),
-    ("three_bet_pf", "p_3bet", "p_3bet_opp"),
-    ("fold_to_three_bet_pf", "p_3bet_fold", "p_3bet_faced"),
-    ("call_three_bet_pf", "p_3bet_call", "p_3bet_faced"),
-    ("four_bet_pf", "p_4bet", "p_4bet_opp"),
-    ("fold_to_four_bet_pf", "p_4bet_fold", "p_4bet_faced"),
-    ("call_four_bet_pf", "p_4bet_call", "p_4bet_faced"),
-    ("cold_call_pf", "p_cc", "p_cc_opp"),
-    ("att_to_steal", "p_steal", "p_steal_opp"),
-    ("fold_sb_to_steal", "p_sb_steal_fold", "p_sb_steal_faced"),
-    ("raise_sb_steal", "p_sb_steal_raise", "p_sb_steal_faced"),
-    ("fold_bb_to_steal", "p_bb_steal_fold", "p_bb_steal_faced"),
-    ("raise_bb_steal", "p_bb_steal_raise", "p_bb_steal_faced"),
-    ("cbet_flop", "f_cbet", "f_cbet_opp"),
-    ("fold_to_cbet_flop", "f_cbet_fold", "f_cbet_faced"),
-    ("call_cbet_flop", "f_cbet_call", "f_cbet_faced"),
-    ("raise_cbet_flop", "f_cbet_raise", "f_cbet_faced"),
-    ("cbet_turn", "t_cbet", "t_cbet_opp"),
-    ("fold_to_cbet_turn", "t_cbet_fold", "t_cbet_faced"),
-    ("call_cbet_turn", "t_cbet_call", "t_cbet_faced"),
-    ("raise_cbet_turn", "t_cbet_raise", "t_cbet_faced"),
-    ("check_raise_flop", "f_xr", "f_xr_opp"),
+/// How a stat's denominator is formed from the column sums.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Denominator {
+    /// The sum of one column.
+    Column(&'static str),
+    /// The sum of the first column minus the sum of the second (VPIP: hands minus walks).
+    Difference(&'static str, &'static str),
+}
+
+use Denominator::{Column, Difference};
+
+/// `(stat, numerator column, denominator)` in `docs/stats.md` §5 order.
+pub(crate) const STAT_TABLE: &[(&str, &str, Denominator)] = &[
+    ("vpip", "p_vpip", Difference("hands", "p_walk")),
+    ("pfr", "p_pfr", Column("p_pfr_opp")),
+    ("saw_flop", "f_saw", Column("hands")),
+    ("wtsd", "sd_went", Column("f_saw")),
+    ("wsd", "sd_won", Column("sd_went")),
+    ("wwsf", "f_saw_won", Column("f_saw")),
+    ("win", "won_hand", Column("hands")),
+    ("rfi", "p_rfi", Column("p_rfi_opp")),
+    ("three_bet_pf", "p_3bet", Column("p_3bet_opp")),
+    (
+        "fold_to_three_bet_pf",
+        "p_3bet_fold",
+        Column("p_3bet_faced"),
+    ),
+    ("call_three_bet_pf", "p_3bet_call", Column("p_3bet_faced")),
+    ("four_bet_pf", "p_4bet", Column("p_4bet_opp")),
+    ("fold_to_four_bet_pf", "p_4bet_fold", Column("p_4bet_faced")),
+    ("call_four_bet_pf", "p_4bet_call", Column("p_4bet_faced")),
+    ("cold_call_pf", "p_cc", Column("p_cc_opp")),
+    ("att_to_steal", "p_steal", Column("p_steal_opp")),
+    (
+        "fold_sb_to_steal",
+        "p_sb_steal_fold",
+        Column("p_sb_steal_faced"),
+    ),
+    (
+        "raise_sb_steal",
+        "p_sb_steal_raise",
+        Column("p_sb_steal_faced"),
+    ),
+    (
+        "fold_bb_to_steal",
+        "p_bb_steal_fold",
+        Column("p_bb_steal_faced"),
+    ),
+    (
+        "raise_bb_steal",
+        "p_bb_steal_raise",
+        Column("p_bb_steal_faced"),
+    ),
+    ("cbet_flop", "f_cbet", Column("f_cbet_opp")),
+    ("fold_to_cbet_flop", "f_cbet_fold", Column("f_cbet_faced")),
+    ("call_cbet_flop", "f_cbet_call", Column("f_cbet_faced")),
+    ("raise_cbet_flop", "f_cbet_raise", Column("f_cbet_faced")),
+    ("cbet_turn", "t_cbet", Column("t_cbet_opp")),
+    ("fold_to_cbet_turn", "t_cbet_fold", Column("t_cbet_faced")),
+    ("call_cbet_turn", "t_cbet_call", Column("t_cbet_faced")),
+    ("raise_cbet_turn", "t_cbet_raise", Column("t_cbet_faced")),
+    ("check_raise_flop", "f_xr", Column("f_xr_opp")),
+];
+
+/// One street's action-count columns for AF and AFq (`docs/stats.md` §5).
+pub(crate) struct AggressionStreet {
+    pub af: &'static str,
+    pub afq: &'static str,
+    pub bets: &'static str,
+    pub raises: &'static str,
+    pub calls: &'static str,
+    pub folds: &'static str,
+    /// Counted in `af_total` and `afq_total` (flop, turn and river).
+    pub postflop: bool,
+}
+
+/// The streets of AF and AFq, in report order; `af_total` and `afq_total` follow them.
+pub(crate) const AGGRESSION_STREETS: &[AggressionStreet] = &[
+    AggressionStreet {
+        af: "af_pf",
+        afq: "afq_pf",
+        bets: "p_bets",
+        raises: "p_raises",
+        calls: "p_calls",
+        folds: "p_folds",
+        postflop: false,
+    },
+    AggressionStreet {
+        af: "af_flop",
+        afq: "afq_flop",
+        bets: "f_bets",
+        raises: "f_raises",
+        calls: "f_calls",
+        folds: "f_folds",
+        postflop: true,
+    },
+    AggressionStreet {
+        af: "af_turn",
+        afq: "afq_turn",
+        bets: "t_bets",
+        raises: "t_raises",
+        calls: "t_calls",
+        folds: "t_folds",
+        postflop: true,
+    },
+    AggressionStreet {
+        af: "af_river",
+        afq: "afq_river",
+        bets: "r_bets",
+        raises: "r_raises",
+        calls: "r_calls",
+        folds: "r_folds",
+        postflop: true,
+    },
 ];
 
 type StatRatioRow = (&'static str, i64, i64);
 type AggressionStats = (Vec<StatRatioRow>, Vec<StatRatioRow>);
 
+/// The sum of `col`. Every name the report uses is a `Flag` or `Count` column, and the map holds
+/// every such column (`stat_table_columns_exist_and_are_flags_or_counts`).
+fn sum_of(counts: &HashMap<&str, i64>, col: &str) -> i64 {
+    counts.get(col).copied().unwrap_or(0)
+}
+
+fn overflow(figure: &'static str) -> ReportError {
+    ReportError::ArithmeticOverflow { figure }
+}
+
+/// AF and AFq per street, then over flop, turn and river. An overflow names the AF figure for
+/// `bets + raises` and the total calls, and the AFq figure for the rest.
 pub(crate) fn compute_aggression_stats(
     counts: &HashMap<&str, i64>,
 ) -> Result<AggressionStats, ReportError> {
-    let get = |col: &str| counts.get(col).copied().unwrap_or(0);
+    let get = |col: &str| sum_of(counts, col);
 
-    let p_agg = get("p_bets")
-        .checked_add(get("p_raises"))
-        .ok_or(ReportError::ArithmeticOverflow { figure: "af_pf" })?;
-    let f_agg = get("f_bets")
-        .checked_add(get("f_raises"))
-        .ok_or(ReportError::ArithmeticOverflow { figure: "af_flop" })?;
-    let t_agg = get("t_bets")
-        .checked_add(get("t_raises"))
-        .ok_or(ReportError::ArithmeticOverflow { figure: "af_turn" })?;
-    let r_agg = get("r_bets")
-        .checked_add(get("r_raises"))
-        .ok_or(ReportError::ArithmeticOverflow { figure: "af_river" })?;
+    let mut aggression = Vec::with_capacity(AGGRESSION_STREETS.len());
+    for street in AGGRESSION_STREETS {
+        let agg = get(street.bets)
+            .checked_add(get(street.raises))
+            .ok_or(overflow(street.af))?;
+        aggression.push(agg);
+    }
 
-    let postflop_agg = f_agg
-        .checked_add(t_agg)
-        .ok_or(ReportError::ArithmeticOverflow { figure: "af_total" })?
-        .checked_add(r_agg)
-        .ok_or(ReportError::ArithmeticOverflow { figure: "af_total" })?;
+    let mut postflop_agg: i64 = 0;
+    let mut postflop_calls: i64 = 0;
+    for (street, &agg) in AGGRESSION_STREETS.iter().zip(&aggression) {
+        if street.postflop {
+            postflop_agg = postflop_agg.checked_add(agg).ok_or(overflow("af_total"))?;
+            postflop_calls = postflop_calls
+                .checked_add(get(street.calls))
+                .ok_or(overflow("af_total"))?;
+        }
+    }
 
-    let postflop_calls = get("f_calls")
-        .checked_add(get("t_calls"))
-        .ok_or(ReportError::ArithmeticOverflow { figure: "af_total" })?
-        .checked_add(get("r_calls"))
-        .ok_or(ReportError::ArithmeticOverflow { figure: "af_total" })?;
+    let mut af_definitions: Vec<StatRatioRow> = AGGRESSION_STREETS
+        .iter()
+        .zip(&aggression)
+        .map(|(street, &agg)| (street.af, agg, get(street.calls)))
+        .collect();
+    af_definitions.push(("af_total", postflop_agg, postflop_calls));
 
-    let af_definitions = vec![
-        ("af_pf", p_agg, get("p_calls")),
-        ("af_flop", f_agg, get("f_calls")),
-        ("af_turn", t_agg, get("t_calls")),
-        ("af_river", r_agg, get("r_calls")),
-        ("af_total", postflop_agg, postflop_calls),
-    ];
+    let mut afq_definitions = Vec::with_capacity(AGGRESSION_STREETS.len() + 1);
+    for (street, &agg) in AGGRESSION_STREETS.iter().zip(&aggression) {
+        let den = agg
+            .checked_add(get(street.calls))
+            .and_then(|v| v.checked_add(get(street.folds)))
+            .ok_or(overflow(street.afq))?;
+        afq_definitions.push((street.afq, agg, den));
+    }
 
-    let p_afq_den = p_agg
-        .checked_add(get("p_calls"))
-        .ok_or(ReportError::ArithmeticOverflow { figure: "afq_pf" })?
-        .checked_add(get("p_folds"))
-        .ok_or(ReportError::ArithmeticOverflow { figure: "afq_pf" })?;
-
-    let f_afq_den = f_agg
-        .checked_add(get("f_calls"))
-        .ok_or(ReportError::ArithmeticOverflow { figure: "afq_flop" })?
-        .checked_add(get("f_folds"))
-        .ok_or(ReportError::ArithmeticOverflow { figure: "afq_flop" })?;
-
-    let t_afq_den = t_agg
-        .checked_add(get("t_calls"))
-        .ok_or(ReportError::ArithmeticOverflow { figure: "afq_turn" })?
-        .checked_add(get("t_folds"))
-        .ok_or(ReportError::ArithmeticOverflow { figure: "afq_turn" })?;
-
-    let r_afq_den = r_agg
-        .checked_add(get("r_calls"))
-        .ok_or(ReportError::ArithmeticOverflow {
-            figure: "afq_river",
-        })?
-        .checked_add(get("r_folds"))
-        .ok_or(ReportError::ArithmeticOverflow {
-            figure: "afq_river",
-        })?;
-
-    let postflop_folds = get("f_folds")
-        .checked_add(get("t_folds"))
-        .ok_or(ReportError::ArithmeticOverflow {
-            figure: "afq_total",
-        })?
-        .checked_add(get("r_folds"))
-        .ok_or(ReportError::ArithmeticOverflow {
-            figure: "afq_total",
-        })?;
-
+    let mut postflop_folds: i64 = 0;
+    for street in AGGRESSION_STREETS.iter().filter(|s| s.postflop) {
+        postflop_folds = postflop_folds
+            .checked_add(get(street.folds))
+            .ok_or(overflow("afq_total"))?;
+    }
     let total_afq_den = postflop_agg
         .checked_add(postflop_calls)
-        .ok_or(ReportError::ArithmeticOverflow {
-            figure: "afq_total",
-        })?
-        .checked_add(postflop_folds)
-        .ok_or(ReportError::ArithmeticOverflow {
-            figure: "afq_total",
-        })?;
-
-    let afq_definitions = vec![
-        ("afq_pf", p_agg, p_afq_den),
-        ("afq_flop", f_agg, f_afq_den),
-        ("afq_turn", t_agg, t_afq_den),
-        ("afq_river", r_agg, r_afq_den),
-        ("afq_total", postflop_agg, total_afq_den),
-    ];
+        .and_then(|v| v.checked_add(postflop_folds))
+        .ok_or(overflow("afq_total"))?;
+    afq_definitions.push(("afq_total", postflop_agg, total_afq_den));
 
     Ok((af_definitions, afq_definitions))
 }
@@ -211,8 +265,7 @@ pub(crate) fn build_stats_rows(
         let currency: String = row.get(0)?;
         let mut counts = HashMap::with_capacity(stat_cols.len());
         for &col in &stat_cols {
-            let val: Option<i64> = row.get(col)?;
-            counts.insert(col, val.unwrap_or(0));
+            counts.insert(col, row.get::<_, i64>(col)?);
         }
         by_currency.insert(currency, counts);
     }
@@ -220,16 +273,13 @@ pub(crate) fn build_stats_rows(
     let mut rows = Vec::new();
 
     for (currency, counts) in by_currency {
-        for &(stat, num_col, den_col) in STAT_TABLE {
-            let num = counts.get(num_col).copied().unwrap_or(0);
-            let den = if stat == "vpip" {
-                let hands = counts.get("hands").copied().unwrap_or(0);
-                let p_walk = counts.get("p_walk").copied().unwrap_or(0);
-                hands
-                    .checked_sub(p_walk)
-                    .ok_or(ReportError::ArithmeticOverflow { figure: "vpip" })?
-            } else {
-                counts.get(den_col).copied().unwrap_or(0)
+        for &(stat, num_col, den) in STAT_TABLE {
+            let num = sum_of(&counts, num_col);
+            let den = match den {
+                Column(col) => sum_of(&counts, col),
+                Difference(minuend, subtrahend) => sum_of(&counts, minuend)
+                    .checked_sub(sum_of(&counts, subtrahend))
+                    .ok_or(overflow(stat))?,
             };
 
             rows.push(StatsRow {
@@ -271,6 +321,7 @@ pub(crate) fn build_stats_rows(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::stats::{ColumnKind, column_spec};
 
     #[test]
     fn stats_af_pf_overflow_returns_error() {
@@ -284,42 +335,115 @@ mod tests {
         ));
     }
 
+    /// Each pair of columns whose sums overflow names the figure it feeds.
+    #[test]
+    fn every_aggression_overflow_names_its_figure() {
+        let cases: &[(&str, &str, &str)] = &[
+            ("p_bets", "p_raises", "af_pf"),
+            ("f_bets", "f_raises", "af_flop"),
+            ("t_bets", "t_raises", "af_turn"),
+            ("r_bets", "r_raises", "af_river"),
+            ("f_bets", "t_bets", "af_total"),
+            ("f_calls", "r_calls", "af_total"),
+            ("p_calls", "p_folds", "afq_pf"),
+            ("f_calls", "f_folds", "afq_flop"),
+            ("t_calls", "t_folds", "afq_turn"),
+            ("r_calls", "r_folds", "afq_river"),
+            ("f_folds", "r_folds", "afq_total"),
+            ("f_calls", "t_folds", "afq_total"),
+        ];
+        for &(big, one, figure) in cases {
+            let counts = HashMap::from([(big, i64::MAX), (one, 1)]);
+            let err = compute_aggression_stats(&counts).unwrap_err();
+            assert!(
+                matches!(err, ReportError::ArithmeticOverflow { figure: f } if f == figure),
+                "{big} + {one}: expected {figure}, got {err:?}"
+            );
+        }
+    }
+
+    /// Every column of a street feeds that street's figures, and only flop, turn and river feed
+    /// the totals: distinct powers of two make every sum identify its inputs.
+    #[test]
+    fn aggression_figures_read_their_own_columns() {
+        let mut counts = HashMap::new();
+        let mut bit = 1_i64;
+        for street in AGGRESSION_STREETS {
+            for col in [street.bets, street.raises, street.calls, street.folds] {
+                counts.insert(col, bit);
+                bit <<= 1;
+            }
+        }
+        let (af, afq) = compute_aggression_stats(&counts).unwrap();
+        // Street i: bets 1, raises 2, calls 4 and folds 8, times 16^i.
+        let street = |i: u32| {
+            let base = 1_i64 << (4 * i);
+            (base + 2 * base, 4 * base, 8 * base)
+        };
+        let mut expected_af = Vec::new();
+        let mut expected_afq = Vec::new();
+        for (i, s) in AGGRESSION_STREETS.iter().enumerate() {
+            let (agg, calls, folds) = street(u32::try_from(i).unwrap());
+            expected_af.push((s.af, agg, calls));
+            expected_afq.push((s.afq, agg, agg + calls + folds));
+        }
+        let post = |k: usize| -> i64 {
+            (1..4)
+                .map(|i| {
+                    let t = street(i);
+                    [t.0, t.1, t.2][k]
+                })
+                .sum()
+        };
+        expected_af.push(("af_total", post(0), post(1)));
+        expected_afq.push(("afq_total", post(0), post(0) + post(1) + post(2)));
+        assert_eq!(af, expected_af);
+        assert_eq!(afq, expected_afq);
+    }
+
+    /// Every name the report reads is a `Flag` or `Count` column, so a misspelled name fails here
+    /// instead of reading as 0.
     #[test]
     fn stat_table_columns_exist_and_are_flags_or_counts() {
-        use crate::stats::{ColumnKind, column_spec};
-
-        for &(stat, num_col, den_col) in STAT_TABLE {
-            let num_spec = column_spec(num_col)
-                .unwrap_or_else(|| panic!("stat {stat}: unknown numerator column {num_col}"));
-            assert!(
-                matches!(num_spec.kind, ColumnKind::Flag | ColumnKind::Count),
-                "stat {stat}: numerator column {num_col} has unexpected kind {:?}",
-                num_spec.kind
-            );
-            let den_spec = column_spec(den_col)
-                .unwrap_or_else(|| panic!("stat {stat}: unknown denominator column {den_col}"));
-            assert!(
-                matches!(den_spec.kind, ColumnKind::Flag | ColumnKind::Count),
-                "stat {stat}: denominator column {den_col} has unexpected kind {:?}",
-                den_spec.kind
-            );
+        let mut names: Vec<(&str, &str)> = Vec::new();
+        for &(stat, num, den) in STAT_TABLE {
+            names.push((stat, num));
+            match den {
+                Denominator::Column(col) => names.push((stat, col)),
+                Denominator::Difference(a, b) => {
+                    names.push((stat, a));
+                    names.push((stat, b));
+                }
+            }
         }
-
-        let p_walk_spec = column_spec("p_walk").expect("p_walk exists");
-        assert!(matches!(
-            p_walk_spec.kind,
-            ColumnKind::Flag | ColumnKind::Count
-        ));
-
-        for col in [
-            "p_bets", "p_raises", "p_calls", "p_folds", "f_bets", "f_raises", "f_calls", "f_folds",
-            "t_bets", "t_raises", "t_calls", "t_folds", "r_bets", "r_raises", "r_calls", "r_folds",
-        ] {
+        for s in AGGRESSION_STREETS {
+            for col in [s.bets, s.raises, s.calls, s.folds] {
+                names.push((s.af, col));
+            }
+        }
+        assert_eq!(names.len(), 29 * 2 + 1 + 4 * 4);
+        for (stat, col) in names {
             let spec =
-                column_spec(col).unwrap_or_else(|| panic!("missing action count column {col}"));
-            assert!(matches!(spec.kind, ColumnKind::Flag | ColumnKind::Count));
+                column_spec(col).unwrap_or_else(|| panic!("stat {stat}: unknown column {col}"));
+            assert!(
+                matches!(spec.kind, ColumnKind::Flag | ColumnKind::Count),
+                "stat {stat}: column {col} has kind {:?}",
+                spec.kind
+            );
         }
-
         assert!(column_spec("nonexistent_stat").is_none());
+    }
+
+    #[test]
+    fn vpip_divides_by_hands_minus_walks() {
+        assert_eq!(
+            STAT_TABLE[0],
+            ("vpip", "p_vpip", Denominator::Difference("hands", "p_walk"))
+        );
+        assert!(
+            STAT_TABLE[1..]
+                .iter()
+                .all(|(_, _, d)| matches!(d, Denominator::Column(_)))
+        );
     }
 }

@@ -908,3 +908,70 @@ fn csv_text_fields_quoted_when_needed() {
         "expected quoted table name in sessions report, got:\n{text}"
     );
 }
+
+/// `Some([])` selects no hand (SPEC_v3.8 M17.1.4: `<stakes>` is `0`): every report is its header
+/// line, and nothing is unmatched.
+#[test]
+fn an_empty_stakes_list_selects_no_hand() {
+    let temp_db = NamedTempFile::new().unwrap();
+    let mut repo = SqliteRepository::open(temp_db.path()).unwrap();
+    let stored = repo
+        .insert_hands_batch(&[hero_sb_folds("H_EMPTY", dec!(0.05), dec!(0.10))])
+        .unwrap();
+    assert!(stored.rejected.is_empty(), "{:?}", stored.rejected);
+
+    let empty = ReportOptions {
+        stakes: Some(Vec::new()),
+    };
+    for kind in [
+        ReportKind::Results,
+        ReportKind::Positions,
+        ReportKind::Sessions,
+        ReportKind::Stats,
+    ] {
+        let all = report_text(&repo, kind, &ReportOptions::default());
+        assert!(all.lines().count() > 1, "{kind:?}: {all}");
+        let mut buf = Vec::new();
+        let outcome = write_report(&repo, kind, &empty, &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            text.lines().collect::<Vec<_>>(),
+            all.lines().take(1).collect::<Vec<_>>(),
+            "{kind:?}"
+        );
+        assert!(outcome.unmatched_stakes.is_empty(), "{kind:?}");
+    }
+}
+
+/// Two thousand stakes items select as one: the stakes condition does not grow with the list
+/// (an `OR` chain of about 994 pairs exceeds SQLite's expression depth; SPEC_v3.8 amendment A1).
+#[test]
+fn two_thousand_stakes_items_report_like_one() {
+    let temp_db = NamedTempFile::new().unwrap();
+    let mut repo = SqliteRepository::open(temp_db.path()).unwrap();
+    let stored = repo
+        .insert_hands_batch(&[hero_sb_folds("H_MANY", dec!(0.05), dec!(0.10))])
+        .unwrap();
+    assert!(stored.rejected.is_empty(), "{:?}", stored.rejected);
+
+    let mut items: Vec<String> = (1..2000).map(|i| format!("0.05/{i}")).collect();
+    items.push("0.05/0.1".to_string());
+    let refs: Vec<&str> = items.iter().map(String::as_str).collect();
+    let many = stakes_options(&refs);
+    let one = stakes_options(&["0.05/0.1"]);
+    for kind in [
+        ReportKind::Results,
+        ReportKind::Positions,
+        ReportKind::Sessions,
+        ReportKind::Stats,
+    ] {
+        let mut buf = Vec::new();
+        let outcome = write_report(&repo, kind, &many, &mut buf).unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            report_text(&repo, kind, &one),
+            "{kind:?}"
+        );
+        assert_eq!(outcome.unmatched_stakes.len(), 1999, "{kind:?}");
+    }
+}

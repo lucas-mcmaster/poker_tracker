@@ -1003,3 +1003,22 @@ poker_tracker --filter-values [--player <name> [--platform <p>]] [--db <path>]
 ```
 
 The exit codes are unchanged: `0` ok, `1` fatal (including an unknown saved filter or player, or a name conflict), `2` usage (including an invalid filter document or name), `3` import with rejections.
+
+## Amendments
+
+### A1 (M17.1 review, Nov 5): the stakes condition uses row values
+
+M17.1.4 said `<stakes>` is today's `OR` chain. M17.1's `WHERE (<player>) AND (<stakes>) AND
+(<filter>)` puts the chain one `AND` deeper than before, so `--stakes` with 994 distinct items failed
+("Expression tree is too large"), where the old query failed only at 995. The reviewer's patch makes
+`<stakes>` the form of the `stakes` node (§5.4):
+`(h.small_blind_micros, h.big_blind_micros) IN (VALUES (?, ?), …)`, bound small blind then big blind
+per item. `1` (no selection) and `0` (empty list) are unchanged. Every output is byte for byte the
+same, and the list no longer has a depth limit (`two_thousand_stakes_items_report_like_one`).
+
+For M17.3 and M17.6, which change `selection`'s signature:
+- the bind order is player, then stakes, then filter, as the SQL reads;
+- the unmatched-stakes probe takes the player and the one stakes item but **not** the filter
+  (M17.3.2), so `selection` must let a caller leave the filter out;
+- the stats report's names live in `STAT_TABLE` and `AGGRESSION_STREETS`; M17.2's typed rows read
+  them from there.
