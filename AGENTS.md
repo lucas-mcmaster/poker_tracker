@@ -1,8 +1,10 @@
 # AGENTS.md — `poker_tracker` Engineering Constitution
 
 You are a senior Rust engineer on `poker_tracker`, a post-session poker tracker that ingests hand
-history files into SQLite and derives statistics from them. Read this file in full before
-changing anything, and follow it exactly. If it and any other instruction disagree, stop and ask
+history files into SQLite and derives statistics from them. **The product is an application with
+a user interface over the library API; nobody will use the command line once it exists.** So every
+contract is a Rust API first, and the CLI is a thin test harness over it (ARCHITECTURE §1). Read
+this file in full before changing anything, and follow it exactly. If it and any other instruction disagree, stop and ask
 the user.
 
 ## 1. Sources of truth (in priority order)
@@ -49,7 +51,9 @@ stop and report the difference; do not pick one.
    (`clippy::float_arithmetic = "deny"`). Use `rust_decimal::Decimal` in memory and `i64`
    micro-units (millionths: `1.00 = 1_000_000`) in SQLite via `decimal_to_micro_units`, which
    rejects rather than rounds. Read only integer columns from SQLite and compute ratios in Rust
-   with `Decimal`; never divide in SQL. Equities are exact integer fractions. Convert integers
+   with `Decimal`; never divide in SQL, and never let an integer product overflow in SQL (SQLite
+   silently turns it into a `REAL`): guard every product so that it provably fits in `i64`.
+   Equities are exact integer fractions. Convert integers
    with `try_from`; keep an `as` cast only where a comment says why it is lossless.
 2. **No panics in `src/`** (`clippy::unwrap_used`/`expect_used = "deny"`): no `.unwrap()`,
    `.expect()`, `panic!`, `unreachable!` or `todo!`. The single exception is the
@@ -72,7 +76,11 @@ stop and report the difference; do not pick one.
 7. **Stable identifiers.** Every `as_str()` value (`Platform`, `GameType`, `BettingLimit`,
    `ActionType`, `DeductionKind`, `AdjustmentKind`), `Street::code` and `hand_player_stats`
    column name is stored in SQLite: add values, never rename one. List each new variant in its
-   `stored_identifier!` call.
+   `stored_identifier!` call. So is the card encoding of `hand_players.hole_card_*` and
+   `board_cards` (`Card::raw()` = `rank << 2 | suit`, ranks `Two = 0 … Ace = 12`, suits
+   `c d h s` = `0 … 3`), which filters compile into SQL, and so is the vocabulary of the saved
+   filter format (node `type`s, field names, operators, labels; `docs/SPEC_v3.8.md` §5): add,
+   never rename; a change that would misread a saved definition bumps `FILTER_FORMAT_VERSION`.
 8. **Migrations are append-only.** Never edit or reorder an entry of `MIGRATIONS`
    (`src/storage/schema.rs`); a schema change is a new entry. A new enum variant needs no
    migration (kind columns are free text).
@@ -83,7 +91,11 @@ stop and report the difference; do not pick one.
     never read by validation, ingestion or duplicate detection. Changing the definition of a
     stored column in `docs/stats.md` (position, counter, money or equity) bumps `STATS_VERSION`
     in the same commit; figures computed at report time (stat ratios, `bb_won`, `bb/100`,
-    sessions) do not.
+    sessions, filters) do not.
+11. **No SQL from text.** Every value reaches SQLite as a bound parameter. The only identifiers
+    interpolated into SQL come from closed lists in the code (`stats::COLUMN_SPECS`, the `hands`
+    columns a filter may name); a user-supplied string is never formatted into SQL, not even a
+    saved filter's name.
 
 ## 4. How to work
 
@@ -140,13 +152,14 @@ stop and report the difference; do not pick one.
 ## 5. Where things are
 
 - `src/`: `domain/` (model, money, cards), `parser/` (`base.rs` validator, `registry.rs`,
-  `ggpoker.rs`), `storage/`, `pipeline/`, `stats/`, `report/`, `main.rs` (CLI); duties in
-  ARCHITECTURE §2.
+  `ggpoker.rs`), `storage/`, `pipeline/`, `stats/`, `report/`, `filter/` (from M17.3), `main.rs`
+  (CLI); duties in ARCHITECTURE §2.
 - `tests/`: `common/mod.rs` (verbatim real hands, found by grepping `pub const <NAME>`, and the CAD
   parser helper); one file per area; `fixtures/ggpoker/` (real CAD exports:
   `NLHRed15_2026-08-21.txt`, 294 hands; `v3_6/*.txt`, 10 files, 989 hands); `fixtures/equity/`;
-  `golden/` (byte-exact report CSVs).
-- `tools/oracles/`: the independent Python oracles (`README.md`).
+  `fixtures/filters/` (filter documents, v3.8); `golden/` (byte-exact report CSVs; `golden/v3_8/`
+  holds one directory per filter case, with its `case.json`).
+- `tools/oracles/`: the independent Python oracles and `db_compare.py` (`README.md`).
 
 ## 6. Running the tool
 
@@ -165,4 +178,6 @@ Exit codes:
 - `2`: usage, including a missing input directory.
 - `3`: completed with rejected files or hands, or no `.txt` files found.
 
-The full CLI contract is in ARCHITECTURE §7.
+The full CLI contract is in ARCHITECTURE §7, including the filter and player options v3.8 adds.
+The CLI is a test harness: it exposes each library API once, with no behaviour of its own
+beyond argument parsing, exit codes and printing.

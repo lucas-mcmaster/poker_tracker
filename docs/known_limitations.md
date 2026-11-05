@@ -6,8 +6,9 @@ It started from `docs/history/BLUEPRINT.md` §8.
 ---
 
 - **Derived statistics.** The derived cache (M13), opportunity counters (M14), results, sessions,
-  and reports (M15), and exact all-in equity (M16) are implemented. Filters (M17 onward), all-in
-  equity with side pots, and the stats of `docs/stats.md` §8 remain deferred.
+  and reports (M15), and exact all-in equity (M16) are implemented. Filters are v3.8
+  (`docs/SPEC_v3.8.md`); all-in equity with side pots and the stats of `docs/stats.md` §8 remain
+  deferred.
 - **Session durations.** Session durations understate the time at the table by about one hand (hand
   histories record start times only). Elapsed times are measured on the timestamps as printed when
   a table's hands do not all state a UTC offset (GGPoker states none), so a session that crosses a
@@ -71,31 +72,36 @@ It started from `docs/history/BLUEPRINT.md` §8.
 
 ## Planned milestones (do not build before a spec covers them)
 
-From `docs/history/SPEC_v3.7.md` §8. M17 is the next version, v3.8.
+v3.8 (M17.1–M17.6, filters) is specified in `docs/SPEC_v3.8.md`. The rest is a plan whose order
+can change with the owner's priorities; each item gets a spec before it is built.
 
-- **M17 — Filters.**
-  - A site-neutral filter tree (AND / OR / NOT, saved under a name), compiled to SQL over `hands`
-    and `hand_player_stats` and accepted by every report (`--filter <name>`).
-  - The groups follow PokerTracker 4:
-    - game details (currency, stakes, table size, dates);
-    - hand details (position, won/lost, showdown, pot size);
-    - session details (session net, duration);
-    - hand values (hole cards, made hand);
-    - board texture;
-    - actions and opportunities (any counter).
-  - Also `--player <name>`, for an opponent or the pool.
-  - The `--stakes` selection becomes one game-details filter, and the option keeps working.
+- **v3.9 — cache v5 and application readiness** (planned, flexible).
+  - The UI technology is chosen; the library's long operations get the shape it needs.
+  - Opening a database never rebuilds the cache by itself: it reports a stale cache, and a
+    rebuild runs on request with progress and cancellation (today the open rebuilds under the
+    write lock, about 10 minutes at a million hands, with no progress).
+  - All-in equity is kept across rebuilds, keyed on its inputs (the live players' hole cards and
+    the all-in board) under its own version, so a `STATS_VERSION` bump no longer recomputes it.
+    Keying on the raw text's hash would not do: a re-parse (M19) keeps the text and can change
+    the hand. This changes `AGENTS.md` §3.10 and the cache versioning rules.
+  - The rebuild reads each hand's players once (today a second query per hand re-reads them).
+  - Final hand and board texture: definitions in `docs/stats.md` first, then a per-hand cache
+    table and `STATS_VERSION` 5, then their filters.
+  - Money filters ("amount won at least 5 bb") and, if wanted, session filters (session net,
+    duration; they need a two-pass selection).
+  - Display labels for stats, counters and filters belong to the UI (localization), not here.
 - **M19 — Database management.**
   - Re-parse stored raw text and quarantined hands after a parser upgrade (this closes the
-    re-parsing limitation above).
-  - Export selected hands as raw text.
+    re-parsing limitation above). It needs a "replace the hand stored under this id" operation.
+  - Export selected hands as raw text (a filter selects them).
   - Purge by date or run.
   - SQLite online backup.
   - Hero aliases across sites (the accounts layer).
   - Optional "my currency" conversion with a stored rate per session (Game Currency vs My
     Currency, as in PT4), never mixing stored amounts.
 - **Deferred further:**
-  - M18, a leak report: Hero's stats by position against reference ranges and the pool.
+  - M18, a leak report: Hero's stats by position against reference ranges and the pool (every
+    non-hero player-hand together).
   - M20, hand review: tags, notes, an HTML replayer.
   - A cross-check of the pinned stats against PT4 on the same exports, by the owner for final
     testing. PT4's rake attribution must be set to "contributed".

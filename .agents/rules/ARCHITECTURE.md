@@ -15,15 +15,25 @@ themselves are not repeated here:
 
 ## 1. Scope
 
+- **The product is an application with a user interface** over this crate's library API. The UI
+  technology is not chosen yet (planned for v3.9). Until then:
+  - every contract is stated as a Rust API first: public types and functions, with `serde`
+    `Serialize` on the data a UI displays and `Deserialize` on what it sends (filters);
+  - the library never prints, never reads stdin and never exits; errors are typed enums a UI can
+    match on, and their `Display` is a message a person can read;
+  - the CLI (`main.rs`) is a test harness that exposes each API once and adds nothing but
+    argument parsing, exit codes and printing.
 - **Built:**
   - hand-history ingestion and persistence; the first source is GGPoker (PokerCraft export),
     No-Limit Hold'em cash, account currency **CAD**;
   - from v3.7 (M13–M16), the derived-statistics layer: positions, stat counters, results and
-    sessions, CSV reports, exact all-in equity.
+    sessions, CSV reports, exact all-in equity;
+  - from v3.8 (M17), filters, saved filters, typed report rows and the selection of any player
+    (`docs/SPEC_v3.8.md` while it is the current spec).
 - **Designed for:** more platforms and currencies, added as new site parsers without changing the
   domain, validator, storage, pipeline, stats or reports.
-- **Out of scope until specified:** filters, currency conversion, Omaha, other limits,
-  tournaments, HUDs, GUI, live import (`docs/known_limitations.md` has the plan).
+- **Out of scope until specified:** currency conversion, Omaha, other limits, tournaments, HUDs,
+  live import (`docs/known_limitations.md` has the plan).
 
 ## 2. Layers
 
