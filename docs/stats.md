@@ -7,7 +7,7 @@ denominators (§5). Every definition below is restated in terms of the canonical
 computed identically for any site.
 
 **This file is authoritative.** Code (`src/stats/`) and the independent oracle
-(`tools/oracles/v3_7_oracle.py`) implement it. If they disagree with this file, they have a bug.
+(`tools/oracles/v3_7_oracle.py`, and `v3_8_oracle.py` for the filters of §9) implement it. If they disagree with this file, they have a bug.
 A change to the definition of a stored column (§1.3) bumps `STATS_VERSION` in the same commit;
 figures computed at report time (the §5 ratios, `bb_won`, `bb/100`, sessions) do not
 (`AGENTS.md` §3.10).
@@ -257,7 +257,8 @@ micro-units go one each to the players with the largest remainders `(T × w_i) m
 lower seat number. The parts always sum to exactly `T`. Use `i128` for the products. If `W` or
 `T` is `0`, every part is `0`.
 
-**Sessions.** A table session is a maximal run of the hero's hands at the same `(platform,
+**Sessions.** A table session is a maximal run of the selected player's hands (the hero's unless a
+report selects another player, §9) at the same `(platform,
 currency, table_name)` (a *table*) in which consecutive hands start at most **30 minutes** apart
 (`SESSION_GAP`, inclusive). Sessions are computed at report time, not cached, from the hands the
 report selects.
@@ -382,3 +383,45 @@ Planned for later milestones (their counters follow the same patterns):
   results report's grouping already), Site.
 
 Not applicable: Blinds (tournaments), Buddy, Player Icon, Site Icon (PT3 interface features).
+
+---
+
+## 9. Filters (v3.8)
+
+A **filter** selects player-hands (§1.1). Every report covers the player-hands that belong to the
+**selected player** (the hero by default; another player by platform and screen name) and match
+the filter. The filter document and its limits are a contract of `docs/SPEC_v3.8.md` §5; this
+section defines what each filter means. Filters compare stored or cached integers and text only:
+nothing here is a new stored column, so filters never change `STATS_VERSION`.
+
+**Two-valued.** Every filter is true or false for every player-hand, never unknown. A filter on
+data the hand does not have (a `NULL` position, hole cards that were never shown) is **false**,
+so its negation is **true**: "not hole cards AA" includes every hand whose cards are unknown.
+
+| Filter | True when |
+| --- | --- |
+| Currency | The hand's currency is one of those listed. |
+| Stakes | The hand's small blind and big blind both equal those of one listed stakes item, compared numerically (`0.05/0.10` is `0.05/0.1`). |
+| Platform | The hand's platform is one of those listed. |
+| Table size | The hand's `max_seats` (the seats at the table, not the players dealt in: a 6-max table is 6 with four players) is within the inclusive range. |
+| Table name | The hand's table name equals one of those listed, exactly (case-sensitive). |
+| Date | The calendar date of the hand's timestamp **as printed** is within the inclusive range (no time-zone conversion; GGPoker states no offset). |
+| Counter | The player-hand's counter (any column of §4, and `ev_qualified` of §6.2) compares as stated (`=`, `!=`, `<`, `<=`, `>`, `>=`) with an integer. "Won the pot" is `won_hand = 1`, "went to showdown" is `sd_went = 1`. |
+| Position | The player's position label (§2, from the code and the hand's `max_seats`) is one of those listed; `?` is a `NULL` position. |
+| Result | `net_won`: `net > 0`; `net_lost`: `net < 0`; `net_zero`: `net = 0`, where `net` is §6.1's (`won − invested + adjustments`). It includes EV Cashout: a player who lost the board but received a cashout larger than what they invested is `net_won` with `won_hand = 0`. |
+| Pot size | The hand's total pot **before deductions** (rake, jackpot and other fees: the pot as the site prints it) is at least / at most `n` big blinds of the hand, `n` an integer: `total_pot ≥ n × big_blind` / `total_pot ≤ n × big_blind`. |
+| Went all-in | At least one of the player's contributions has the all-in flag: a call, bet or raise that commits the whole stack, or a blind or straddle that does. Not the same as `ev_qualified`, which also needs equal live stacks, an all-in before the river and known cards (§6.2). |
+| Hole cards | The player has two known hole cards and their class is one of those listed. The class is `RR` for a pair (`77`), and `HLs` / `HLo` for two ranks, higher first, suited or offsuit (`AKs`, `T9o`), with ranks `23456789TJQKA`. A player with fewer than two known cards has no class. |
+
+**Combining.** `and` is true when every child is, `or` when at least one child is, `not` when its
+child is false.
+
+**Sessions under a filter.** Sessions (§6.1) are formed from the selected player-hands, as for a
+stakes selection. A filter can therefore split one sitting into several sessions: a date range
+that ends at midnight splits a session that crosses it, and any filter that leaves more than
+30 minutes between two selected hands at a table starts a new session there (on the v3.6 folder,
+the hero's ten sessions become eleven with `tests/fixtures/filters/premiums.json`).
+
+**Planned (v3.9; defined before they are built):** final hand and board texture, which need the
+evaluator and therefore a cache column and a `STATS_VERSION` bump; money comparisons ("amount won
+at least 5 bb"); session filters (session net, duration).
