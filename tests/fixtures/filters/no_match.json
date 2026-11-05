@@ -1,0 +1,9 @@
+{
+  "format_version": 1,
+  "filter": {
+    "type": "table_name",
+    "any_of": [
+      "NoSuchTable"
+    ]
+  }
+}

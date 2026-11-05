@@ -1,0 +1,9 @@
+{
+  "format_version": 1,
+  "filter": {
+    "type": "counter",
+    "column": "p_raises",
+    "op": ">=",
+    "value": 2
+  }
+}

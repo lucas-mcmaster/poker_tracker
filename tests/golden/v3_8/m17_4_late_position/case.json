@@ -1,0 +1,7 @@
+{
+  "milestone": "M17.4",
+  "filter": "tests/fixtures/filters/late_position.json",
+  "player": null,
+  "stakes": null,
+  "unmatched_stakes": []
+}

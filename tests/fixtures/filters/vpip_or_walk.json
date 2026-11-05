@@ -1,0 +1,20 @@
+{
+  "format_version": 1,
+  "filter": {
+    "type": "or",
+    "children": [
+      {
+        "type": "counter",
+        "column": "p_vpip",
+        "op": "=",
+        "value": 1
+      },
+      {
+        "type": "counter",
+        "column": "p_walk",
+        "op": "=",
+        "value": 1
+      }
+    ]
+  }
+}

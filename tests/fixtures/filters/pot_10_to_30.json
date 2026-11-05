@@ -1,0 +1,8 @@
+{
+  "format_version": 1,
+  "filter": {
+    "type": "pot_size",
+    "min_big_blinds": 10,
+    "max_big_blinds": 30
+  }
+}

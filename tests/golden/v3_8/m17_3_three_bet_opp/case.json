@@ -1,0 +1,7 @@
+{
+  "milestone": "M17.3",
+  "filter": "tests/fixtures/filters/three_bet_opp.json",
+  "player": null,
+  "stakes": null,
+  "unmatched_stakes": []
+}

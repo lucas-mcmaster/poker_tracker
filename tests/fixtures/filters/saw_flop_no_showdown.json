@@ -1,0 +1,46 @@
+{
+  "format_version": 1,
+  "filter": {
+    "type": "and",
+    "children": [
+      {
+        "type": "currency",
+        "any_of": [
+          "CAD"
+        ]
+      },
+      {
+        "type": "platform",
+        "any_of": [
+          "GGPoker"
+        ]
+      },
+      {
+        "type": "stakes",
+        "any_of": [
+          "0.05/0.10"
+        ]
+      },
+      {
+        "type": "table_size",
+        "min": 6,
+        "max": 6
+      },
+      {
+        "type": "counter",
+        "column": "f_saw",
+        "op": ">=",
+        "value": 1
+      },
+      {
+        "type": "not",
+        "child": {
+          "type": "counter",
+          "column": "sd_went",
+          "op": "=",
+          "value": 1
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "format_version": 1,
+  "filter": {
+    "type": "and",
+    "children": [
+      {
+        "type": "counter",
+        "column": "ev_qualified",
+        "op": "=",
+        "value": 1
+      },
+      {
+        "type": "not",
+        "child": {
+          "type": "went_all_in"
+        }
+      }
+    ]
+  }
+}

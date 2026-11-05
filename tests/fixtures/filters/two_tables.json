@@ -1,0 +1,10 @@
+{
+  "format_version": 1,
+  "filter": {
+    "type": "table_name",
+    "any_of": [
+      "NLHRed14",
+      "NLHRed7"
+    ]
+  }
+}

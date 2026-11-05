@@ -1,0 +1,16 @@
+{
+  "format_version": 1,
+  "filter": {
+    "type": "and",
+    "children": [
+      {
+        "type": "result",
+        "is": "net_lost"
+      },
+      {
+        "type": "pot_size",
+        "min_big_blinds": 20
+      }
+    ]
+  }
+}

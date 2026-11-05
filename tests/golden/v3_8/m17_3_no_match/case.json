@@ -1,0 +1,7 @@
+{
+  "milestone": "M17.3",
+  "filter": "tests/fixtures/filters/no_match.json",
+  "player": null,
+  "stakes": null,
+  "unmatched_stakes": []
+}
