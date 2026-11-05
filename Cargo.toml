@@ -18,11 +18,12 @@ uuid = { version = "1.10", features = ["v7"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"
 walkdir = "2.5"
+# Filter documents and saved filters (SPEC_v3.8 §5; owner decision D11).
+serde_json = "1.0"
 
 [dev-dependencies]
 pretty_assertions = "1.4"
 rust_decimal_macros = "1.36"
-serde_json = "1.0"
 tempfile = "3.13"
 
 [lints.rust]
