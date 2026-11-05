@@ -233,6 +233,18 @@ in `docs/stats.md` depends on this policy.
 
 - **Hero only, per currency.** Every row covers the hero's hands in one currency. Currencies are
   listed alphabetically, and amounts are never added across them.
+- **Typed rows and display rule.** Reports are built as typed rows (`ResultsRow`, `PositionsRow`,
+  `SessionsRow`, `StatsRow`) within `Report`/`ReportRows`. Display and serialization rules are stated
+  once for CSV and JSON:
+  - **Money** (`net`, `rake`, `fees`, `blinds`, `straddles`, `ev_net`) is exact (`micro_units_to_decimal`,
+    normalized); printed in CSV with `Display` and serialized in JSON as numeric string.
+  - **Figures** (`net_per_100`, `bb_won`, `bb_per_100`, `ev_bb_per_100`, percentages, factors)
+    are rounded half-even once to `Decimal` with scale 2 that is never negative zero (`-0.00`
+    normalizes to `0.00`).
+  - **Zero denominators** yield `None`, which prints as an empty cell in CSV and `null` in JSON.
+  - **Stakes:** `None` represents the `ALL` row (`"ALL"` in CSV, `null` in JSON).
+  - **Sessions timestamps:** `start` and `end` format with `TIMESTAMP_FORMAT` (`YYYY-MM-DDTHH:MM:SS`),
+    matching JSON ISO 8601 formatting.
 - **Reading.** One read transaction, after the version guard. Every report query, and the
   unmatched-stakes probe, use one selection fragment joining `hands h`, `hand_players hp` and
   `hand_player_stats hps` with aliases `h`, `hp`, and `hps`. Reports read only integer columns,

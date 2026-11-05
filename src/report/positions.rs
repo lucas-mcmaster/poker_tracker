@@ -1,40 +1,49 @@
 //! Positions report generation (SPEC_v3.7 §6).
 
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
 use rusqlite::Transaction;
+use rust_decimal::Decimal;
+use serde::Serialize;
 
-use super::format::{format_exact_money, format_pct, quote_csv_text};
+use super::format::{quote_csv_text, round_pct};
 use super::{BbWon, ReportError, Stakes};
-use crate::stats::position_label;
+use crate::domain::money::{CurrencyCode, micro_units_to_decimal};
+use crate::stats::PositionLabel;
+use crate::storage::StorageError;
 
 pub const POSITIONS_HEADER: &str = "currency,position,hands,net,bb_per_100,vpip,pfr,rfi";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PositionsRow {
-    pub currency: String,
-    pub position: String,
+    pub currency: CurrencyCode,
+    pub position: PositionLabel,
     pub hands: i64,
-    pub net: String,
-    pub bb_per_100: String,
-    pub vpip: String,
-    pub pfr: String,
-    pub rfi: String,
+    pub net: Decimal,
+    pub bb_per_100: Decimal,
+    pub vpip: Option<Decimal>,
+    pub pfr: Option<Decimal>,
+    pub rfi: Option<Decimal>,
 }
 
 impl PositionsRow {
     #[must_use]
     pub fn to_csv_line(&self) -> String {
+        let fmt_opt = |opt: Option<Decimal>| match opt {
+            Some(v) => v.to_string(),
+            None => String::new(),
+        };
         format!(
             "{},{},{},{},{},{},{},{}",
-            quote_csv_text(&self.currency),
-            quote_csv_text(&self.position),
+            quote_csv_text(self.currency.as_str()),
+            quote_csv_text(self.position.as_str()),
             self.hands,
             self.net,
             self.bb_per_100,
-            self.vpip,
-            self.pfr,
-            self.rfi
+            fmt_opt(self.vpip),
+            fmt_opt(self.pfr),
+            fmt_opt(self.rfi),
         )
     }
 }
@@ -103,8 +112,6 @@ impl PositionAgg {
     }
 }
 
-const ORDERED_LABELS: &[&str] = &["EP", "MP", "CO", "BTN", "SB", "BB", "?"];
-
 pub(crate) fn build_positions_rows(
     tx: &Transaction,
     stakes_filter: Option<&[Stakes]>,
@@ -137,7 +144,7 @@ pub(crate) fn build_positions_rows(
         .map(|v| v as &dyn rusqlite::ToSql)
         .collect();
 
-    let mut agg_by_currency: BTreeMap<String, BTreeMap<&'static str, PositionAgg>> =
+    let mut agg_by_currency: BTreeMap<String, BTreeMap<PositionLabel, PositionAgg>> =
         BTreeMap::new();
     let mut query_rows = stmt.query(rusqlite_params.as_slice())?;
 
@@ -155,10 +162,7 @@ pub(crate) fn build_positions_rows(
         let p_rfi_opp: i64 = row.get(10)?;
         let p_rfi: i64 = row.get(11)?;
 
-        let label = match pos_opt {
-            Some(code) => position_label(code, max_seats),
-            None => "?",
-        };
+        let label = PositionLabel::of(pos_opt, max_seats);
 
         let entry = agg_by_currency
             .entry(currency)
@@ -174,23 +178,29 @@ pub(crate) fn build_positions_rows(
     let mut rows = Vec::new();
 
     for (currency, pos_map) in agg_by_currency {
-        for &label in ORDERED_LABELS {
-            if let Some(agg) = pos_map.get(label) {
+        let currency_code = CurrencyCode::from_str(&currency).map_err(|_| {
+            ReportError::Storage(StorageError::CorruptRow {
+                table: "hands",
+                detail: format!("invalid currency '{currency}'"),
+            })
+        })?;
+        for &label in &PositionLabel::ALL {
+            if let Some(agg) = pos_map.get(&label) {
                 if agg.hands <= 0 {
                     continue;
                 }
-                let bb_per_100_str = agg.bb_won.format_bb_per_100(agg.hands, "bb_per_100")?;
+                let bb_per_100_val = agg.bb_won.bb_per_100(agg.hands, "bb_per_100")?;
                 let vpip_den = agg.hands.saturating_sub(agg.p_walk);
 
                 rows.push(PositionsRow {
-                    currency: currency.clone(),
-                    position: label.to_string(),
+                    currency: currency_code,
+                    position: label,
                     hands: agg.hands,
-                    net: format_exact_money(agg.net_micros),
-                    bb_per_100: bb_per_100_str,
-                    vpip: format_pct(agg.p_vpip, vpip_den),
-                    pfr: format_pct(agg.p_pfr, agg.p_pfr_opp),
-                    rfi: format_pct(agg.p_rfi, agg.p_rfi_opp),
+                    net: micro_units_to_decimal(agg.net_micros),
+                    bb_per_100: bb_per_100_val,
+                    vpip: round_pct(agg.p_vpip, vpip_den),
+                    pfr: round_pct(agg.p_pfr, agg.p_pfr_opp),
+                    rfi: round_pct(agg.p_rfi, agg.p_rfi_opp),
                 });
             }
         }

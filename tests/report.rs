@@ -19,7 +19,11 @@ use poker_tracker::domain::{
     ActionType, CanonicalHand, Card, CommunityCards, CurrencyCode, PotWinner, Rank, Street, Suit,
 };
 use poker_tracker::parser::HandParser;
-use poker_tracker::report::{ReportError, ReportKind, ReportOptions, Stakes, write_report};
+use poker_tracker::report::{
+    PositionsRow, Report, ReportError, ReportKind, ReportOptions, ReportRows, Stakes, StatsRow,
+    build_report, write_csv, write_report,
+};
+use poker_tracker::stats::{PositionLabel, position_label};
 use poker_tracker::storage::{SqliteRepository, StorageError};
 use support::{make_action, make_canonical_hand, make_player};
 
@@ -974,4 +978,261 @@ fn two_thousand_stakes_items_report_like_one() {
         );
         assert_eq!(outcome.unmatched_stakes.len(), 1999, "{kind:?}");
     }
+}
+
+#[test]
+fn typed_report_v3_6_results_positions_sessions() {
+    let v36_dir = Path::new("tests/fixtures/ggpoker/v3_6");
+    let mut paths: Vec<_> = fs::read_dir(v36_dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|ext| ext == "txt"))
+        .collect();
+    paths.sort();
+
+    let parser = gg();
+    let mut all_hands = Vec::new();
+    for p in paths {
+        let content = fs::read_to_string(p).unwrap();
+        for (_, res) in parser.parse_session(&content) {
+            all_hands.push(res.unwrap());
+        }
+    }
+    assert_eq!(all_hands.len(), 989);
+
+    let temp_db = NamedTempFile::new().unwrap();
+    let mut repo = SqliteRepository::open(temp_db.path()).unwrap();
+    repo.insert_hands_batch(&all_hands).unwrap();
+
+    let options = ReportOptions::default();
+
+    // 1. Results
+    let results_report: Report = build_report(&repo, ReportKind::Results, &options).unwrap();
+    assert!(results_report.unmatched_stakes.is_empty());
+    let ReportRows::Results(ref results_rows) = results_report.rows else {
+        panic!("expected results rows");
+    };
+    assert_eq!(results_rows.len(), 1);
+    let r = &results_rows[0];
+    assert_eq!(r.currency, CurrencyCode::CAD);
+    assert_eq!(r.stakes, Some(Stakes::from_str("0.05/0.1").unwrap()));
+    assert_eq!(r.hands, 989);
+    assert_eq!(r.net, dec!(-25.79));
+    assert_eq!(r.net_per_100, dec!(-2.61));
+    assert_eq!(r.bb_won, dec!(-257.90));
+    assert_eq!(r.bb_per_100, dec!(-26.08));
+    assert_eq!(r.rake, dec!(14.23115));
+    assert_eq!(r.fees, dec!(2.500423));
+    assert_eq!(r.blinds, dec!(29.25));
+    assert_eq!(r.straddles, dec!(0));
+    assert_eq!(r.allin_hands, 9);
+    assert_eq!(r.ev_net, dec!(-19.396794));
+    assert_eq!(r.ev_bb_per_100, dec!(-19.61));
+
+    // Every figure has scale 2
+    assert_eq!(r.net_per_100.scale(), 2);
+    assert_eq!(r.bb_won.scale(), 2);
+    assert_eq!(r.bb_per_100.scale(), 2);
+    assert_eq!(r.ev_bb_per_100.scale(), 2);
+
+    // JSON serialization matches spec exactly
+    let json = serde_json::to_string(&results_report).unwrap();
+    let expected_json = r#"{"kind":"results","rows":[{"currency":"CAD","stakes":"0.05/0.1","hands":989,"net":"-25.79","net_per_100":"-2.61","bb_won":"-257.90","bb_per_100":"-26.08","rake":"14.23115","fees":"2.500423","blinds":"29.25","straddles":"0","allin_hands":9,"ev_net":"-19.396794","ev_bb_per_100":"-19.61"}],"unmatched_stakes":[]}"#;
+    assert_eq!(json, expected_json);
+
+    // 2. Positions
+    let positions_report = build_report(&repo, ReportKind::Positions, &options).unwrap();
+    let ReportRows::Positions(ref pos_rows) = positions_report.rows else {
+        panic!("expected positions rows");
+    };
+    let labels: Vec<PositionLabel> = pos_rows.iter().map(|row| row.position).collect();
+    assert_eq!(
+        labels,
+        vec![
+            PositionLabel::Ep,
+            PositionLabel::Mp,
+            PositionLabel::Co,
+            PositionLabel::Btn,
+            PositionLabel::Sb,
+            PositionLabel::Bb,
+        ]
+    );
+    assert_eq!(pos_rows.len(), 6);
+
+    // Assert typed figures from tests/golden/v3_6_positions.csv
+    assert_eq!(pos_rows[0].currency, CurrencyCode::CAD);
+    assert_eq!(pos_rows[0].hands, 96);
+    assert_eq!(pos_rows[0].net, dec!(3.64));
+    assert_eq!(pos_rows[0].bb_per_100, dec!(37.92));
+    assert_eq!(pos_rows[0].vpip, Some(dec!(25.00)));
+    assert_eq!(pos_rows[0].pfr, Some(dec!(23.96)));
+    assert_eq!(pos_rows[0].rfi, Some(dec!(24.21)));
+
+    assert_eq!(pos_rows[1].hands, 139);
+    assert_eq!(pos_rows[1].net, dec!(0.15));
+    assert_eq!(pos_rows[1].bb_per_100, dec!(1.08));
+    assert_eq!(pos_rows[1].vpip, Some(dec!(27.34)));
+    assert_eq!(pos_rows[1].pfr, Some(dec!(27.34)));
+    assert_eq!(pos_rows[1].rfi, Some(dec!(32.32)));
+
+    assert_eq!(pos_rows[2].hands, 178);
+    assert_eq!(pos_rows[2].net, dec!(-5.08));
+    assert_eq!(pos_rows[2].bb_per_100, dec!(-28.54));
+    assert_eq!(pos_rows[2].vpip, Some(dec!(23.03)));
+    assert_eq!(pos_rows[2].pfr, Some(dec!(21.35)));
+    assert_eq!(pos_rows[2].rfi, Some(dec!(22.41)));
+
+    assert_eq!(pos_rows[3].hands, 185);
+    assert_eq!(pos_rows[3].net, dec!(19.31));
+    assert_eq!(pos_rows[3].bb_per_100, dec!(104.38));
+    assert_eq!(pos_rows[3].vpip, Some(dec!(25.95)));
+    assert_eq!(pos_rows[3].pfr, Some(dec!(23.24)));
+    assert_eq!(pos_rows[3].rfi, Some(dec!(32.99)));
+
+    assert_eq!(pos_rows[4].hands, 197);
+    assert_eq!(pos_rows[4].net, dec!(-17.03));
+    assert_eq!(pos_rows[4].bb_per_100, dec!(-86.45));
+    assert_eq!(pos_rows[4].vpip, Some(dec!(29.95)));
+    assert_eq!(pos_rows[4].pfr, Some(dec!(29.95)));
+    assert_eq!(pos_rows[4].rfi, Some(dec!(46.97)));
+
+    assert_eq!(pos_rows[5].hands, 194);
+    assert_eq!(pos_rows[5].net, dec!(-26.78));
+    assert_eq!(pos_rows[5].bb_per_100, dec!(-138.04));
+    assert_eq!(pos_rows[5].vpip, Some(dec!(30.19)));
+    assert_eq!(pos_rows[5].pfr, Some(dec!(14.47)));
+    assert_eq!(pos_rows[5].rfi, Some(dec!(0.00)));
+
+    for r in pos_rows {
+        assert_eq!(r.bb_per_100.scale(), 2);
+        if let Some(v) = r.vpip {
+            assert_eq!(v.scale(), 2);
+        }
+        if let Some(v) = r.pfr {
+            assert_eq!(v.scale(), 2);
+        }
+        if let Some(v) = r.rfi {
+            assert_eq!(v.scale(), 2);
+        }
+    }
+
+    // 3. Sessions JSON check
+    let sessions_report = build_report(&repo, ReportKind::Sessions, &options).unwrap();
+    let ReportRows::Sessions(ref sess_rows) = sessions_report.rows else {
+        panic!("expected sessions rows");
+    };
+    assert!(!sess_rows.is_empty());
+    let s0_json = serde_json::to_string(&sess_rows[0]).unwrap();
+    assert!(
+        s0_json.contains(r#""start":"2026-08-21T16:54:10""#),
+        "expected start with T, got: {s0_json}"
+    );
+
+    // 4. Stats report
+    let stats_report = build_report(&repo, ReportKind::Stats, &options).unwrap();
+
+    // 5. write_csv matches byte-for-byte with all four golden files
+    let mut buf = Vec::new();
+    write_csv(&results_report, &mut buf).unwrap();
+    assert_eq!(buf, fs::read("tests/golden/v3_6_results.csv").unwrap());
+
+    buf.clear();
+    write_csv(&positions_report, &mut buf).unwrap();
+    assert_eq!(buf, fs::read("tests/golden/v3_6_positions.csv").unwrap());
+
+    buf.clear();
+    write_csv(&sessions_report, &mut buf).unwrap();
+    assert_eq!(buf, fs::read("tests/golden/v3_6_sessions.csv").unwrap());
+
+    buf.clear();
+    write_csv(&stats_report, &mut buf).unwrap();
+    assert_eq!(buf, fs::read("tests/golden/v3_6_stats.csv").unwrap());
+}
+
+#[test]
+fn position_label_of_matches_position_label_for_all_codes_and_seats() {
+    for code in 0..=9 {
+        for max_seats in 2..=10 {
+            assert_eq!(
+                PositionLabel::of(Some(code), max_seats).as_str(),
+                position_label(code, max_seats),
+                "mismatch for code={code}, max_seats={max_seats}"
+            );
+        }
+    }
+    for max_seats in 2..=10 {
+        assert_eq!(PositionLabel::of(None, max_seats), PositionLabel::Unknown);
+        assert_eq!(PositionLabel::of(None, max_seats).as_str(), "?");
+    }
+}
+
+#[test]
+fn stakes_and_report_kind_serde() {
+    let stakes = Stakes::from_str("0.05/0.1").unwrap();
+    let json = serde_json::to_string(&stakes).unwrap();
+    assert_eq!(json, r#""0.05/0.1""#);
+    let parsed: Stakes = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed, stakes);
+
+    for (kind, expected_str) in [
+        (ReportKind::Results, r#""results""#),
+        (ReportKind::Positions, r#""positions""#),
+        (ReportKind::Sessions, r#""sessions""#),
+        (ReportKind::Stats, r#""stats""#),
+    ] {
+        let s = serde_json::to_string(&kind).unwrap();
+        assert_eq!(s, expected_str);
+        let back: ReportKind = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, kind);
+    }
+
+    for (label, expected_str) in [
+        (PositionLabel::Ep, r#""EP""#),
+        (PositionLabel::Mp, r#""MP""#),
+        (PositionLabel::Co, r#""CO""#),
+        (PositionLabel::Btn, r#""BTN""#),
+        (PositionLabel::Sb, r#""SB""#),
+        (PositionLabel::Bb, r#""BB""#),
+        (PositionLabel::Unknown, r#""?""#),
+    ] {
+        let s = serde_json::to_string(&label).unwrap();
+        assert_eq!(s, expected_str);
+        let back: PositionLabel = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, label);
+    }
+    assert!(serde_json::from_str::<PositionLabel>(r#""ep""#).is_err());
+    assert!(serde_json::from_str::<PositionLabel>(r#""UNKNOWN""#).is_err());
+}
+
+#[test]
+fn zero_denominator_none_formats_empty_csv_and_null_json() {
+    let pos_row = PositionsRow {
+        currency: CurrencyCode::CAD,
+        position: PositionLabel::Btn,
+        hands: 0,
+        net: dec!(0.00),
+        bb_per_100: dec!(0.00),
+        vpip: None,
+        pfr: None,
+        rfi: None,
+    };
+    assert_eq!(pos_row.to_csv_line(), "CAD,BTN,0,0.00,0.00,,,");
+    let json = serde_json::to_string(&pos_row).unwrap();
+    assert!(json.contains(r#""vpip":null"#));
+    assert!(json.contains(r#""pfr":null"#));
+    assert!(json.contains(r#""rfi":null"#));
+
+    let stats_row = StatsRow {
+        currency: CurrencyCode::CAD,
+        stat: "vpip",
+        numerator: 0,
+        denominator: 0,
+        value: None,
+    };
+    assert_eq!(stats_row.to_csv_line(), "CAD,vpip,0,0,");
+    let stats_json = serde_json::to_string(&stats_row).unwrap();
+    assert_eq!(
+        stats_json,
+        r#"{"currency":"CAD","stat":"vpip","numerator":0,"denominator":0,"value":null}"#
+    );
 }

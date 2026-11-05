@@ -1,40 +1,52 @@
 //! Results report generation (SPEC_v3.7 §6, §7).
 
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
 use rusqlite::Transaction;
 use rust_decimal::Decimal;
+use serde::Serialize;
 
-use super::format::{format_exact_money, format_fixed2, quote_csv_text};
+use super::format::{quote_csv_text, round_half_even_2dp};
 use super::{BbWon, ReportError, Stakes};
+use crate::domain::money::{CurrencyCode, micro_units_to_decimal};
+use crate::storage::StorageError;
 
 pub const RESULTS_HEADER: &str = "currency,stakes,hands,net,net_per_100,bb_won,bb_per_100,rake,fees,blinds,straddles,allin_hands,ev_net,ev_bb_per_100";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ResultsRow {
-    pub currency: String,
-    pub stakes: String,
+    pub currency: CurrencyCode,
+    pub stakes: Option<Stakes>,
     pub hands: i64,
-    pub net: String,
-    pub net_per_100: String,
-    pub bb_won: String,
-    pub bb_per_100: String,
-    pub rake: String,
-    pub fees: String,
-    pub blinds: String,
-    pub straddles: String,
+    pub net: Decimal,
+    pub net_per_100: Decimal,
+    pub bb_won: Decimal,
+    pub bb_per_100: Decimal,
+    pub rake: Decimal,
+    pub fees: Decimal,
+    pub blinds: Decimal,
+    pub straddles: Decimal,
     pub allin_hands: i64,
-    pub ev_net: String,
-    pub ev_bb_per_100: String,
+    pub ev_net: Decimal,
+    pub ev_bb_per_100: Decimal,
 }
 
 impl ResultsRow {
     #[must_use]
     pub fn to_csv_line(&self) -> String {
+        let stakes_buf;
+        let stakes_str = match &self.stakes {
+            Some(s) => {
+                stakes_buf = s.to_string();
+                quote_csv_text(&stakes_buf)
+            }
+            None => std::borrow::Cow::Borrowed("ALL"),
+        };
         format!(
             "{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
-            quote_csv_text(&self.currency),
-            quote_csv_text(&self.stakes),
+            quote_csv_text(self.currency.as_str()),
+            stakes_str,
             self.hands,
             self.net,
             self.net_per_100,
@@ -186,6 +198,12 @@ pub(crate) fn build_results_rows(
     let mut result_rows = Vec::new();
 
     for (currency, groups) in rows_by_currency {
+        let currency_code = CurrencyCode::from_str(&currency).map_err(|_| {
+            ReportError::Storage(StorageError::CorruptRow {
+                table: "hands",
+                detail: format!("invalid currency '{currency}'"),
+            })
+        })?;
         let totals = aggregate_result_totals(&groups)?;
         let mut total_bb_won = BbWon::default();
         let mut total_ev_bb_won = BbWon::default();
@@ -196,62 +214,60 @@ pub(crate) fn build_results_rows(
 
             let mut row_bb_won = BbWon::default();
             row_bb_won.add(g.big_blind_micros, g.net_micros);
-            let bb_won_str = row_bb_won.format_bb_won("bb_won")?;
-            let bb_per_100_str = row_bb_won.format_bb_per_100(g.hands, "bb_per_100")?;
+            let bb_won_val = row_bb_won.bb_won("bb_won")?;
+            let bb_per_100_val = row_bb_won.bb_per_100(g.hands, "bb_per_100")?;
             total_bb_won.add(g.big_blind_micros, g.net_micros);
 
             let mut row_ev_bb_won = BbWon::default();
             row_ev_bb_won.add(g.big_blind_micros, g.ev_net_micros);
-            let ev_bb_per_100_str = row_ev_bb_won.format_bb_per_100(g.hands, "ev_bb_per_100")?;
+            let ev_bb_per_100_val = row_ev_bb_won.bb_per_100(g.hands, "ev_bb_per_100")?;
             total_ev_bb_won.add(g.big_blind_micros, g.ev_net_micros);
 
-            let stakes_str = Stakes {
+            let stakes = Stakes {
                 small_blind_micros: g.small_blind_micros,
                 big_blind_micros: g.big_blind_micros,
-            }
-            .to_string();
+            };
 
             result_rows.push(ResultsRow {
-                currency: currency.clone(),
-                stakes: stakes_str,
+                currency: currency_code,
+                stakes: Some(stakes),
                 hands: g.hands,
-                net: format_exact_money(g.net_micros),
-                net_per_100: format_fixed2(net_per_100_dec),
-                bb_won: bb_won_str,
-                bb_per_100: bb_per_100_str,
-                rake: format_exact_money(g.rake_micros),
-                fees: format_exact_money(g.fees_micros),
-                blinds: format_exact_money(g.blinds_micros),
-                straddles: format_exact_money(g.straddles_micros),
+                net: micro_units_to_decimal(g.net_micros),
+                net_per_100: round_half_even_2dp(net_per_100_dec),
+                bb_won: bb_won_val,
+                bb_per_100: bb_per_100_val,
+                rake: micro_units_to_decimal(g.rake_micros),
+                fees: micro_units_to_decimal(g.fees_micros),
+                blinds: micro_units_to_decimal(g.blinds_micros),
+                straddles: micro_units_to_decimal(g.straddles_micros),
                 allin_hands: g.allin_hands,
-                ev_net: format_exact_money(g.ev_net_micros),
-                ev_bb_per_100: ev_bb_per_100_str,
+                ev_net: micro_units_to_decimal(g.ev_net_micros),
+                ev_bb_per_100: ev_bb_per_100_val,
             });
         }
 
         if groups.len() > 1 && totals.hands > 0 {
             let net_dec = Decimal::new(totals.net_micros, 6);
             let net_per_100_dec = (net_dec / Decimal::from(totals.hands)) * Decimal::from(100);
-            let total_bb_won_str = total_bb_won.format_bb_won("bb_won")?;
-            let bb_per_100_str = total_bb_won.format_bb_per_100(totals.hands, "bb_per_100")?;
-            let ev_bb_per_100_str =
-                total_ev_bb_won.format_bb_per_100(totals.hands, "ev_bb_per_100")?;
+            let total_bb_won_val = total_bb_won.bb_won("bb_won")?;
+            let bb_per_100_val = total_bb_won.bb_per_100(totals.hands, "bb_per_100")?;
+            let ev_bb_per_100_val = total_ev_bb_won.bb_per_100(totals.hands, "ev_bb_per_100")?;
 
             result_rows.push(ResultsRow {
-                currency,
-                stakes: "ALL".to_string(),
+                currency: currency_code,
+                stakes: None,
                 hands: totals.hands,
-                net: format_exact_money(totals.net_micros),
-                net_per_100: format_fixed2(net_per_100_dec),
-                bb_won: total_bb_won_str,
-                bb_per_100: bb_per_100_str,
-                rake: format_exact_money(totals.rake_micros),
-                fees: format_exact_money(totals.fees_micros),
-                blinds: format_exact_money(totals.blinds_micros),
-                straddles: format_exact_money(totals.straddles_micros),
+                net: micro_units_to_decimal(totals.net_micros),
+                net_per_100: round_half_even_2dp(net_per_100_dec),
+                bb_won: total_bb_won_val,
+                bb_per_100: bb_per_100_val,
+                rake: micro_units_to_decimal(totals.rake_micros),
+                fees: micro_units_to_decimal(totals.fees_micros),
+                blinds: micro_units_to_decimal(totals.blinds_micros),
+                straddles: micro_units_to_decimal(totals.straddles_micros),
                 allin_hands: totals.allin_hands,
-                ev_net: format_exact_money(totals.ev_net_micros),
-                ev_bb_per_100: ev_bb_per_100_str,
+                ev_net: micro_units_to_decimal(totals.ev_net_micros),
+                ev_bb_per_100: ev_bb_per_100_val,
             });
         }
     }

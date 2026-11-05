@@ -4,8 +4,6 @@ use std::borrow::Cow;
 
 use rust_decimal::{Decimal, RoundingStrategy};
 
-use crate::domain::money::micro_units_to_decimal;
-
 /// Quotes a CSV text field per RFC 4180 if it contains comma, double quote, CR, or LF.
 #[must_use]
 pub fn quote_csv_text(s: &str) -> Cow<'_, str> {
@@ -25,46 +23,42 @@ pub fn quote_csv_text(s: &str) -> Cow<'_, str> {
     }
 }
 
-/// Formats exact money amounts with trailing zeros removed (`-25.79`, `14.23115`, `-1`, `0`).
+/// Rounds a Decimal half-even to 2 decimal places with scale 2, normalizing negative zero.
 #[must_use]
-pub fn format_exact_money(micros: i64) -> String {
-    micro_units_to_decimal(micros).to_string()
+pub fn round_half_even_2dp(val: Decimal) -> Decimal {
+    let mut rounded = val.round_dp_with_strategy(2, RoundingStrategy::MidpointNearestEven);
+    rounded.rescale(2);
+    if rounded.is_zero() && rounded.is_sign_negative() {
+        rounded = Decimal::new(0, 2);
+    }
+    rounded
 }
 
-/// Rounds a Decimal half-even to 2 decimal places and formats with exactly 2 decimals.
+/// Computes `(num / den) * 100` rounded half-even to 2 decimal places, or `None` if `den <= 0`.
 #[must_use]
-pub fn format_fixed2(val: Decimal) -> String {
-    let rounded = val.round_dp_with_strategy(2, RoundingStrategy::MidpointNearestEven);
-    format!("{rounded:.2}")
-}
-
-/// Formats a percentage `(num / den) * 100` half-even to 2 decimals.
-/// Returns an empty string if `den == 0`.
-#[must_use]
-pub fn format_pct(num: i64, den: i64) -> String {
-    if den == 0 {
-        String::new()
+pub fn round_pct(num: i64, den: i64) -> Option<Decimal> {
+    if den <= 0 {
+        None
     } else {
         let val = (Decimal::from(num) / Decimal::from(den)) * Decimal::from(100);
-        format_fixed2(val)
+        Some(round_half_even_2dp(val))
     }
 }
 
-/// Formats an aggression factor `num / den` half-even to 2 decimals.
-/// Returns an empty string if `den == 0`.
+/// Computes `num / den` rounded half-even to 2 decimal places, or `None` if `den <= 0`.
 #[must_use]
-pub fn format_factor(num: i64, den: i64) -> String {
-    if den == 0 {
-        String::new()
+pub fn round_factor(num: i64, den: i64) -> Option<Decimal> {
+    if den <= 0 {
+        None
     } else {
         let val = Decimal::from(num) / Decimal::from(den);
-        format_fixed2(val)
+        Some(round_half_even_2dp(val))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::quote_csv_text;
+    use super::*;
 
     #[test]
     fn csv_text_is_quoted_for_each_special_character_alone() {
@@ -79,5 +73,40 @@ mod tests {
         ] {
             assert_eq!(quote_csv_text(field), printed, "{field:?}");
         }
+    }
+
+    #[test]
+    fn round_half_even_scale_two_and_no_negative_zero() {
+        let d = round_half_even_2dp(Decimal::new(-1, 3)); // -0.001
+        assert_eq!(d, Decimal::new(0, 2));
+        assert_eq!(d.scale(), 2);
+        assert!(!d.is_sign_negative());
+
+        // Ties round to nearest even hundredth
+        let d2 = round_half_even_2dp(Decimal::new(53125, 3)); // 53.125 -> 53.12 (2 is even)
+        assert_eq!(d2, Decimal::new(5312, 2));
+        assert_eq!(d2.scale(), 2);
+
+        let d2_odd = round_half_even_2dp(Decimal::new(53135, 3)); // 53.135 -> 53.14 (4 is even)
+        assert_eq!(d2_odd, Decimal::new(5314, 2));
+        assert_eq!(d2_odd.scale(), 2);
+
+        let d3 = round_half_even_2dp(Decimal::new(0, 0));
+        assert_eq!(d3.scale(), 2);
+        assert_eq!(d3.to_string(), "0.00");
+
+        // Negative zero input normalizes to positive zero
+        let neg_zero = -Decimal::new(0, 2);
+        assert!(neg_zero.is_sign_negative());
+        let norm_zero = round_half_even_2dp(neg_zero);
+        assert_eq!(norm_zero.scale(), 2);
+        assert!(!norm_zero.is_sign_negative());
+        assert_eq!(norm_zero.to_string(), "0.00");
+
+        // -0.005 rounds to -0.00, normalized to 0.00
+        let neg_tie = round_half_even_2dp(Decimal::new(-5, 3));
+        assert_eq!(neg_tie.scale(), 2);
+        assert!(!neg_tie.is_sign_negative());
+        assert_eq!(neg_tie.to_string(), "0.00");
     }
 }

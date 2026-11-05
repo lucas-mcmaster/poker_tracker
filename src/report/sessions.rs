@@ -1,12 +1,17 @@
 //! Sessions report generation (SPEC_v3.7 §6, `docs/stats.md` §6.1).
 
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
 use chrono::{NaiveDateTime, TimeDelta};
 use rusqlite::Transaction;
+use rust_decimal::Decimal;
+use serde::Serialize;
 
-use super::format::{format_exact_money, quote_csv_text};
+use super::format::quote_csv_text;
 use super::{BbWon, ReportError, Stakes};
+use crate::domain::canonical::Platform;
+use crate::domain::money::{CurrencyCode, micro_units_to_decimal};
 use crate::storage::StorageError;
 use crate::storage::repository::TIMESTAMP_FORMAT;
 
@@ -16,18 +21,18 @@ pub const SESSIONS_HEADER: &str =
 /// The longest start-to-start gap between consecutive hands of one session (inclusive).
 const SESSION_GAP_SECONDS: i64 = 30 * 60;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionsRow {
-    pub currency: String,
-    pub platform: String,
+    pub currency: CurrencyCode,
+    pub platform: Platform,
     pub table: String,
-    pub start: String,
-    pub end: String,
+    pub start: NaiveDateTime,
+    pub end: NaiveDateTime,
     pub duration_seconds: i64,
     pub hands: i64,
-    pub net: String,
-    pub bb_per_100: String,
-    pub ev_net: String,
+    pub net: Decimal,
+    pub bb_per_100: Decimal,
+    pub ev_net: Decimal,
 }
 
 impl SessionsRow {
@@ -35,11 +40,11 @@ impl SessionsRow {
     pub fn to_csv_line(&self) -> String {
         format!(
             "{},{},{},{},{},{},{},{},{},{}",
-            quote_csv_text(&self.currency),
-            quote_csv_text(&self.platform),
+            quote_csv_text(self.currency.as_str()),
+            quote_csv_text(self.platform.as_str()),
             quote_csv_text(&self.table),
-            self.start,
-            self.end,
+            self.start.format(TIMESTAMP_FORMAT),
+            self.end.format(TIMESTAMP_FORMAT),
             self.duration_seconds,
             self.hands,
             self.net,
@@ -55,8 +60,6 @@ struct HandEntry {
     platform: String,
     currency: String,
     table: String,
-    /// The stored timestamp text, printed as `start` and `end`.
-    timestamp_text: String,
     /// The timestamp as printed.
     local: NaiveDateTime,
     /// The UTC time, when the hand states a UTC offset.
@@ -211,7 +214,6 @@ pub(crate) fn build_sessions_rows(
             platform: row.get(0)?,
             currency: row.get(1)?,
             table: row.get(2)?,
-            timestamp_text,
             local,
             utc,
             site_hand_id: row.get(5)?,
@@ -251,6 +253,18 @@ fn session_row(session: &[TimedHand]) -> Result<Option<SessionsRow>, ReportError
     let (Some((_, first)), Some((_, last))) = (session.first(), session.last()) else {
         return Ok(None);
     };
+    let currency = CurrencyCode::from_str(&first.currency).map_err(|_| {
+        ReportError::Storage(StorageError::CorruptRow {
+            table: "hands",
+            detail: format!("invalid currency '{}'", first.currency),
+        })
+    })?;
+    let platform = Platform::from_str(&first.platform).map_err(|_| {
+        ReportError::Storage(StorageError::CorruptRow {
+            table: "hands",
+            detail: format!("invalid platform '{}'", first.platform),
+        })
+    })?;
     let (total_net, total_ev_net) =
         aggregate_session_net(session.iter().map(|(_, h)| (h.net_micros, h.ev_net_micros)))?;
     let mut bb_won = BbWon::default();
@@ -258,19 +272,19 @@ fn session_row(session: &[TimedHand]) -> Result<Option<SessionsRow>, ReportError
         bb_won.add(hand.big_blind_micros, hand.net_micros);
     }
     let hands = i64::try_from(session.len()).unwrap_or(i64::MAX);
-    let bb_per_100 = bb_won.format_bb_per_100(hands, "bb_per_100")?;
+    let bb_per_100 = bb_won.bb_per_100(hands, "bb_per_100")?;
 
     Ok(Some(SessionsRow {
-        currency: first.currency.clone(),
-        platform: first.platform.clone(),
+        currency,
+        platform,
         table: first.table.clone(),
-        start: first.timestamp_text.clone(),
-        end: last.timestamp_text.clone(),
+        start: first.local,
+        end: last.local,
         duration_seconds: duration_seconds(session),
         hands,
-        net: format_exact_money(total_net),
+        net: micro_units_to_decimal(total_net),
         bb_per_100,
-        ev_net: format_exact_money(total_ev_net),
+        ev_net: micro_units_to_decimal(total_ev_net),
     }))
 }
 
@@ -315,7 +329,6 @@ mod tests {
             platform: platform.to_string(),
             currency: currency.to_string(),
             table: table.to_string(),
-            timestamp_text: ts.to_string(),
             local,
             utc,
             site_hand_id: id.to_string(),
@@ -431,7 +444,7 @@ mod tests {
             .enumerate()
             .map(|(i, &net_micros)| {
                 let mut h = hand(
-                    "PlatformA",
+                    "GGPoker",
                     "T",
                     &format!("N{i}"),
                     "2026-08-21T12:00:00",
@@ -443,8 +456,8 @@ mod tests {
             })
             .collect();
         let row = session_row(&session).unwrap().unwrap();
-        assert_eq!(row.net, "1237.23");
-        assert_eq!(row.bb_per_100, "5155.12");
+        assert_eq!(row.net, Decimal::new(123723, 2));
+        assert_eq!(row.bb_per_100, Decimal::new(515512, 2));
     }
 
     #[test]
@@ -457,6 +470,32 @@ mod tests {
                     if detail.contains("21/08/2026 17:30:00")
             ),
             "{err:?}"
+        );
+    }
+
+    #[test]
+    fn unparseable_currency_or_platform_in_session_row_is_corrupt_row() {
+        let mut h_bad_curr = hand("GGPoker", "T", "B1", "2026-08-21T12:00:00", None);
+        h_bad_curr.currency = "cad".to_string(); // invalid lowercase
+        let err = session_row(&[(h_bad_curr.local, h_bad_curr)]).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                ReportError::Storage(StorageError::CorruptRow { table: "hands", detail })
+                    if detail.contains("cad")
+            ),
+            "{err:?}"
+        );
+
+        let h_bad_plat = hand("PlatformA", "T", "B2", "2026-08-21T12:00:00", None);
+        let err2 = session_row(&[(h_bad_plat.local, h_bad_plat)]).unwrap_err();
+        assert!(
+            matches!(
+                &err2,
+                ReportError::Storage(StorageError::CorruptRow { table: "hands", detail })
+                    if detail.contains("PlatformA")
+            ),
+            "{err2:?}"
         );
     }
 }

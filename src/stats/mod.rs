@@ -18,7 +18,7 @@ use rust_decimal::Decimal;
 use crate::domain::canonical::{ActionType, AdjustmentKind, CanonicalHand, Street};
 use crate::domain::{Card, decimal_to_micro_units};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Current version of the derived statistics cache schema and definitions.
 pub const STATS_VERSION: i64 = 4;
@@ -232,25 +232,84 @@ impl<'a> ReplayState<'a> {
     }
 }
 
+/// Position label derived at report time (docs/stats.md §2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum PositionLabel {
+    #[serde(rename = "EP")]
+    Ep,
+    #[serde(rename = "MP")]
+    Mp,
+    #[serde(rename = "CO")]
+    Co,
+    #[serde(rename = "BTN")]
+    Btn,
+    #[serde(rename = "SB")]
+    Sb,
+    #[serde(rename = "BB")]
+    Bb,
+    #[serde(rename = "?")]
+    Unknown,
+}
+
+impl PositionLabel {
+    /// Position labels in report order: EP, MP, CO, BTN, SB, BB, ?.
+    pub const ALL: [Self; 7] = [
+        Self::Ep,
+        Self::Mp,
+        Self::Co,
+        Self::Btn,
+        Self::Sb,
+        Self::Bb,
+        Self::Unknown,
+    ];
+
+    /// String representation matching `stats.md` §2 ("EP" .. "BB", "?").
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ep => "EP",
+            Self::Mp => "MP",
+            Self::Co => "CO",
+            Self::Btn => "BTN",
+            Self::Sb => "SB",
+            Self::Bb => "BB",
+            Self::Unknown => "?",
+        }
+    }
+
+    /// Derives the position label from a position code and table size (docs/stats.md §2).
+    /// `None` maps to `Unknown`.
+    #[must_use]
+    pub fn of(code: Option<u8>, max_seats: u8) -> Self {
+        match code {
+            Some(9) => Self::Sb,
+            Some(8) => Self::Bb,
+            Some(0) => Self::Btn,
+            Some(1) => Self::Co,
+            Some(2) => Self::Mp,
+            Some(3 | 4) => {
+                if max_seats <= 6 {
+                    Self::Ep
+                } else {
+                    Self::Mp
+                }
+            }
+            Some(5..=7) => Self::Ep,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+impl std::fmt::Display for PositionLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Maps a position code and table size to a human-readable position label.
 #[must_use]
 pub fn position_label(code: u8, max_seats: u8) -> &'static str {
-    match code {
-        9 => "SB",
-        8 => "BB",
-        0 => "BTN",
-        1 => "CO",
-        2 => "MP",
-        3 | 4 => {
-            if max_seats <= 6 {
-                "EP"
-            } else {
-                "MP"
-            }
-        }
-        5..=7 => "EP",
-        _ => "?",
-    }
+    PositionLabel::of(Some(code), max_seats).as_str()
 }
 
 /// Assigns position codes (0..=9) to seats in a hand, or empty map if standard layout fails.

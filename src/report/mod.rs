@@ -8,19 +8,27 @@ pub mod sessions;
 pub mod stats;
 
 pub use crate::domain::money::Stakes;
+pub use crate::stats::PositionLabel;
+pub use positions::PositionsRow;
+pub use results::ResultsRow;
 pub(crate) use selection::selection;
+pub use sessions::SessionsRow;
+pub use stats::StatsRow;
 
 use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 use std::str::FromStr;
 
 use rusqlite::OptionalExtension;
+use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::storage::{SqliteRepository, StorageError};
 
 /// The four supported report kinds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ReportKind {
     Results,
     Positions,
@@ -54,6 +62,24 @@ pub struct ReportOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportOutcome {
     pub unmatched_stakes: Vec<Stakes>,
+}
+
+/// Container for a complete typed report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Report {
+    #[serde(flatten)]
+    pub rows: ReportRows,
+    pub unmatched_stakes: Vec<Stakes>,
+}
+
+/// Typed rows by report kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "rows", rename_all = "snake_case")]
+pub enum ReportRows {
+    Results(Vec<ResultsRow>),
+    Positions(Vec<PositionsRow>),
+    Sessions(Vec<SessionsRow>),
+    Stats(Vec<StatsRow>),
 }
 
 /// Errors during report generation.
@@ -177,9 +203,9 @@ impl Rational {
         })
     }
 
-    pub(crate) fn round_half_even_2dp(self, figure: &'static str) -> Result<String, ReportError> {
+    pub(crate) fn round_half_even_2dp(self, figure: &'static str) -> Result<Decimal, ReportError> {
         if self.num == 0 {
-            return Ok("0.00".to_string());
+            return Ok(Decimal::new(0, 2));
         }
         let is_neg = self.num < 0;
         let num_times_100 = self
@@ -210,13 +236,24 @@ impl Rational {
         };
 
         if rounded_cents == 0 {
-            return Ok("0.00".to_string());
+            return Ok(Decimal::new(0, 2));
         }
 
-        let whole = rounded_cents / 100;
-        let cents = rounded_cents % 100;
-        let sign = if is_neg { "-" } else { "" };
-        Ok(format!("{sign}{whole}.{cents:02}"))
+        let signed_cents = if is_neg {
+            let neg_i128 = i128::try_from(rounded_cents)
+                .map_err(|_| ReportError::ArithmeticOverflow { figure })?;
+            -neg_i128
+        } else {
+            i128::try_from(rounded_cents).map_err(|_| ReportError::ArithmeticOverflow { figure })?
+        };
+
+        let mut dec = Decimal::try_from_i128_with_scale(signed_cents, 2)
+            .map_err(|_| ReportError::ArithmeticOverflow { figure })?;
+
+        if dec.is_zero() && dec.is_sign_negative() {
+            dec = Decimal::new(0, 2);
+        }
+        Ok(dec)
     }
 }
 
@@ -249,36 +286,34 @@ impl BbWon {
         Ok(total)
     }
 
-    pub(crate) fn format_bb_won(&self, figure: &'static str) -> Result<String, ReportError> {
+    pub(crate) fn bb_won(&self, figure: &'static str) -> Result<Decimal, ReportError> {
         self.total_rational(figure)?.round_half_even_2dp(figure)
     }
 
-    pub(crate) fn format_bb_per_100(
+    pub(crate) fn bb_per_100(
         &self,
         hands: i64,
         figure: &'static str,
-    ) -> Result<String, ReportError> {
+    ) -> Result<Decimal, ReportError> {
         self.total_rational(figure)?
             .checked_per_100(hands, figure)?
             .round_half_even_2dp(figure)
     }
 }
 
-/// Generates a CSV report and writes it to `out`.
+/// Builds a typed [`Report`] for the given kind and options.
 ///
 /// Runs entirely in one read transaction. The first read is the statistics cache
 /// version guard (SPEC_v3.7 §2 step 5); if the cache is missing or stale,
-/// returns [`ReportError::Storage`] with [`StorageError::StaleDerivedCache`] and
-/// writes nothing to `out`.
+/// returns [`ReportError::Storage`] with [`StorageError::StaleDerivedCache`].
 ///
 /// # Errors
-/// Returns [`ReportError`] on cache version mismatch, SQLite failure, or I/O failure.
-pub fn write_report(
+/// Returns [`ReportError`] on cache version mismatch, SQLite failure, or arithmetic overflow.
+pub fn build_report(
     repo: &SqliteRepository,
     kind: ReportKind,
     options: &ReportOptions,
-    out: &mut impl Write,
-) -> Result<ReportOutcome, ReportError> {
+) -> Result<Report, ReportError> {
     let tx = repo.connection().unchecked_transaction()?;
 
     // Version guard (§2 step 5)
@@ -333,40 +368,76 @@ pub fn write_report(
 
     let stakes_slice = dedup_stakes.as_deref();
 
-    match kind {
-        ReportKind::Results => {
-            let rows = results::build_results_rows(&tx, stakes_slice)?;
+    let rows = match kind {
+        ReportKind::Results => ReportRows::Results(results::build_results_rows(&tx, stakes_slice)?),
+        ReportKind::Positions => {
+            ReportRows::Positions(positions::build_positions_rows(&tx, stakes_slice)?)
+        }
+        ReportKind::Sessions => {
+            ReportRows::Sessions(sessions::build_sessions_rows(&tx, stakes_slice)?)
+        }
+        ReportKind::Stats => ReportRows::Stats(stats::build_stats_rows(&tx, stakes_slice)?),
+    };
+
+    tx.finish()?;
+
+    Ok(Report {
+        rows,
+        unmatched_stakes,
+    })
+}
+
+/// Formats a [`Report`] as CSV and writes it to `out`.
+///
+/// # Errors
+/// Returns [`ReportError::Io`] on write failure.
+pub fn write_csv(report: &Report, out: &mut impl Write) -> Result<(), ReportError> {
+    match &report.rows {
+        ReportRows::Results(rows) => {
             writeln!(out, "{}", results::RESULTS_HEADER)?;
             for r in rows {
                 writeln!(out, "{}", r.to_csv_line())?;
             }
         }
-        ReportKind::Positions => {
-            let rows = positions::build_positions_rows(&tx, stakes_slice)?;
+        ReportRows::Positions(rows) => {
             writeln!(out, "{}", positions::POSITIONS_HEADER)?;
             for r in rows {
                 writeln!(out, "{}", r.to_csv_line())?;
             }
         }
-        ReportKind::Sessions => {
-            let rows = sessions::build_sessions_rows(&tx, stakes_slice)?;
+        ReportRows::Sessions(rows) => {
             writeln!(out, "{}", sessions::SESSIONS_HEADER)?;
             for r in rows {
                 writeln!(out, "{}", r.to_csv_line())?;
             }
         }
-        ReportKind::Stats => {
-            let rows = stats::build_stats_rows(&tx, stakes_slice)?;
+        ReportRows::Stats(rows) => {
             writeln!(out, "{}", stats::STATS_HEADER)?;
             for r in rows {
                 writeln!(out, "{}", r.to_csv_line())?;
             }
         }
     }
+    Ok(())
+}
 
-    tx.finish()?;
-
-    Ok(ReportOutcome { unmatched_stakes })
+/// Generates a CSV report and writes it to `out`.
+///
+/// Builds a typed report with [`build_report`] and formats it with [`write_csv`].
+///
+/// # Errors
+/// Returns [`ReportError`] on cache version mismatch, SQLite failure, or I/O failure.
+pub fn write_report(
+    repo: &SqliteRepository,
+    kind: ReportKind,
+    options: &ReportOptions,
+    out: &mut impl Write,
+) -> Result<ReportOutcome, ReportError> {
+    let report = build_report(repo, kind, options)?;
+    write_csv(&report, out)?;
+    Ok(ReportOutcome {
+        unmatched_stakes: report.unmatched_stakes,
+    })
 }
 
 #[cfg(test)]
@@ -380,36 +451,45 @@ mod tests {
         let mut bb1 = BbWon::default();
         bb1.add(3_000_000, -29_990_000);
         bb1.add(6_000_000, 23_590_000);
-        assert_eq!(bb1.format_bb_won("bb_won").unwrap(), "-6.06");
-        assert_eq!(bb1.format_bb_per_100(2, "bb_per_100").unwrap(), "-303.25");
+        assert_eq!(bb1.bb_won("bb_won").unwrap().to_string(), "-6.06");
+        assert_eq!(
+            bb1.bb_per_100(2, "bb_per_100").unwrap().to_string(),
+            "-303.25"
+        );
 
         // Case 2: Negated -> 6.06; over 2 hands -> 303.25
         let mut bb2 = BbWon::default();
         bb2.add(3_000_000, 29_990_000);
         bb2.add(6_000_000, -23_590_000);
-        assert_eq!(bb2.format_bb_won("bb_won").unwrap(), "6.06");
-        assert_eq!(bb2.format_bb_per_100(2, "bb_per_100").unwrap(), "303.25");
+        assert_eq!(bb2.bb_won("bb_won").unwrap().to_string(), "6.06");
+        assert_eq!(
+            bb2.bb_per_100(2, "bb_per_100").unwrap().to_string(),
+            "303.25"
+        );
 
         // Case 3: (240_000, -10_000), (480_000, -20_000), (960_000, -40_000) -> -0.12; over 4 hands -> -3.12
         let mut bb3 = BbWon::default();
         bb3.add(240_000, -10_000);
         bb3.add(480_000, -20_000);
         bb3.add(960_000, -40_000);
-        assert_eq!(bb3.format_bb_won("bb_won").unwrap(), "-0.12");
-        assert_eq!(bb3.format_bb_per_100(4, "bb_per_100").unwrap(), "-3.12");
+        assert_eq!(bb3.bb_won("bb_won").unwrap().to_string(), "-0.12");
+        assert_eq!(
+            bb3.bb_per_100(4, "bb_per_100").unwrap().to_string(),
+            "-3.12"
+        );
 
         // Case 4: (100_000, -100) -> -0.001 -> 0.00
         let mut bb4 = BbWon::default();
         bb4.add(100_000, -100);
-        assert_eq!(bb4.format_bb_won("bb_won").unwrap(), "0.00");
+        assert_eq!(bb4.bb_won("bb_won").unwrap().to_string(), "0.00");
 
         // Case 5: Overflow path returns ArithmeticOverflow
         let mut bb_ov = BbWon::default();
         bb_ov.add(1_000_000_000_000_000_003, 1);
-        bb_ov.add(1_000_000_000_000_000_009, 1);
-        bb_ov.add(1_000_000_000_000_000_021, 1);
+        bb_ov.add(1_000_000_000_000_009, 1);
+        bb_ov.add(1_000_000_000_000_021, 1);
         assert!(matches!(
-            bb_ov.format_bb_won("bb_won"),
+            bb_ov.bb_won("bb_won"),
             Err(ReportError::ArithmeticOverflow { figure: "bb_won" })
         ));
     }
@@ -420,9 +500,12 @@ mod tests {
         let mut bb = BbWon::default();
         bb.add(1_000_000, 5_000_000_000_000_000_000);
         bb.add(1_000_000, 5_000_000_000_000_000_000);
-        assert_eq!(bb.format_bb_won("bb_won").unwrap(), "10000000000000.00");
         assert_eq!(
-            bb.format_bb_per_100(2, "bb_per_100").unwrap(),
+            bb.bb_won("bb_won").unwrap().to_string(),
+            "10000000000000.00"
+        );
+        assert_eq!(
+            bb.bb_per_100(2, "bb_per_100").unwrap().to_string(),
             "500000000000000.00"
         );
     }
@@ -447,7 +530,20 @@ mod tests {
         ] {
             bb.add(big_blind, net);
         }
-        assert_eq!(bb.format_bb_won("bb_won").unwrap(), "12.05");
-        assert_eq!(bb.format_bb_per_100(10, "bb_per_100").unwrap(), "120.50");
+        assert_eq!(bb.bb_won("bb_won").unwrap().to_string(), "12.05");
+        assert_eq!(
+            bb.bb_per_100(10, "bb_per_100").unwrap().to_string(),
+            "120.50"
+        );
+    }
+
+    #[test]
+    fn bb_won_no_negative_zero() {
+        let mut b = BbWon::default();
+        b.add(100_000, -100);
+        let val = b.bb_won("bb_won").unwrap();
+        assert_eq!(val, Decimal::ZERO);
+        assert_eq!(val.scale(), 2);
+        assert!(!val.is_sign_negative());
     }
 }

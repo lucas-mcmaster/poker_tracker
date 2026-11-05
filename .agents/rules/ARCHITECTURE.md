@@ -266,14 +266,28 @@ rules, are in `docs/invariants.md` §1 and §2.
   each player's equity as a reduced fraction over every completion of `board`
   (`stats.md` §6.2). Returns `None` for fewer than two players, more than five board cards or a
   repeated card.
-- `pub fn position_label(code: u8, max_seats: u8) -> &'static str` per `stats.md` §2.
+- `PositionLabel` (`PositionLabel::{Ep, Mp, Co, Btn, Sb, Bb, Unknown}`): report-time position
+  labels with `PositionLabel::of(code: Option<u8>, max_seats: u8)`, `as_str()` (`"EP" … "BB"`, `"?"`),
+  `ALL`, and serde. `pub fn position_label(code: u8, max_seats: u8) -> &'static str` delegates to it.
 - **Performance** (release build): one heads-up preflop all-in (1,712,304 runouts) in under 1 s;
   a full `--rebuild-stats` of the corpus in under 10 s. The debug `cargo test --locked` stays
   under 60 s; `[profile.dev] opt-level = 1` keeps it well inside that.
 
-**`src/report/`:** `pub fn write_report(repo: &SqliteRepository, kind: ReportKind, options:
-&ReportOptions, out: &mut impl Write) -> Result<ReportOutcome, ReportError>`.
+**`src/report/`:**
 
+- `pub fn build_report(repo: &SqliteRepository, kind: ReportKind, options: &ReportOptions) -> Result<Report, ReportError>`:
+  builds a typed report in a single read transaction after the version guard.
+- `Report { rows: ReportRows, unmatched_stakes: Vec<Stakes> }` (with `#[serde(flatten)] rows`), and
+  `ReportRows::{Results(Vec<ResultsRow>), Positions(Vec<PositionsRow>), Sessions(Vec<SessionsRow>), Stats(Vec<StatsRow>)}`
+  (tagged adjacently: `kind`, `rows`).
+- Typed rows: `ResultsRow`, `PositionsRow`, `SessionsRow`, `StatsRow` with typed fields
+  (`CurrencyCode`, `Option<Stakes>`, `PositionLabel`, `Platform`, `NaiveDateTime`, `Decimal`,
+  `Option<Decimal>`).
+- `pub fn write_csv(report: &Report, out: &mut impl Write) -> Result<(), ReportError>`: formats a
+  typed report as RFC 4180 CSV.
+- `pub fn write_report(repo: &SqliteRepository, kind: ReportKind, options: &ReportOptions, out: &mut impl Write) -> Result<ReportOutcome, ReportError>`:
+  thin wrapper calling `build_report` followed by `write_csv`.
+- `PositionLabel` is re-exported from `report`.
 - Every report query, and the unmatched-stakes probe, use one selection fragment
   (`report::selection::selection`) joining `hands h`, `hand_players hp` and `hand_player_stats hps`,
   with aliases `h`, `hp`, and `hps`. Its stakes condition is
@@ -282,7 +296,7 @@ rules, are in `docs/invariants.md` §1 and §2.
 - The stats report reads every name it uses from two constant tables, `STAT_TABLE` (stat,
   numerator column, `Denominator`) and `AGGRESSION_STREETS` (the AF and AFq columns per street),
   and a unit test checks each name is a `Flag` or `Count` column.
-- `ReportKind::{Results, Positions, Sessions, Stats}`.
+- `ReportKind::{Results, Positions, Sessions, Stats}` (with snake_case serde).
 - `ReportOptions { stakes: Option<Vec<Stakes>> }`: `None` (the `Default`) means every stake. M17
   filters will subsume it; until then it is the only selection.
 - `Stakes` is a domain type (`crate::domain::money::Stakes`), re-exported from `report`.

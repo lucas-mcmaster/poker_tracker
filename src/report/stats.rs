@@ -1,38 +1,45 @@
 //! Statistics report generation (SPEC_v3.7 §6).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::str::FromStr;
 
 use rusqlite::Transaction;
+use rust_decimal::Decimal;
+use serde::Serialize;
 
-use super::format::{format_factor, format_pct, quote_csv_text};
+use super::format::{quote_csv_text, round_factor, round_pct};
 use super::{ReportError, Stakes};
+use crate::domain::money::CurrencyCode;
+use crate::storage::StorageError;
 
 pub const STATS_HEADER: &str = "currency,stat,numerator,denominator,value";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StatsRow {
-    pub currency: String,
-    pub stat: String,
+    pub currency: CurrencyCode,
+    pub stat: &'static str,
     pub numerator: i64,
     pub denominator: i64,
-    pub value: String,
+    pub value: Option<Decimal>,
 }
 
 impl StatsRow {
     #[must_use]
     pub fn to_csv_line(&self) -> String {
+        let val_str = match self.value {
+            Some(v) => v.to_string(),
+            None => String::new(),
+        };
         format!(
             "{},{},{},{},{}",
-            quote_csv_text(&self.currency),
-            quote_csv_text(&self.stat),
+            quote_csv_text(self.currency.as_str()),
+            quote_csv_text(self.stat),
             self.numerator,
             self.denominator,
-            self.value
+            val_str,
         )
     }
 }
-
-use std::collections::HashMap;
 
 /// How a stat's denominator is formed from the column sums.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,6 +280,12 @@ pub(crate) fn build_stats_rows(
     let mut rows = Vec::new();
 
     for (currency, counts) in by_currency {
+        let currency_code = CurrencyCode::from_str(&currency).map_err(|_| {
+            ReportError::Storage(StorageError::CorruptRow {
+                table: "hands",
+                detail: format!("invalid currency '{currency}'"),
+            })
+        })?;
         for &(stat, num_col, den) in STAT_TABLE {
             let num = sum_of(&counts, num_col);
             let den = match den {
@@ -283,11 +296,11 @@ pub(crate) fn build_stats_rows(
             };
 
             rows.push(StatsRow {
-                currency: currency.clone(),
-                stat: stat.to_string(),
+                currency: currency_code,
+                stat,
                 numerator: num,
                 denominator: den,
-                value: format_pct(num, den),
+                value: round_pct(num, den),
             });
         }
 
@@ -295,21 +308,21 @@ pub(crate) fn build_stats_rows(
 
         for (name, num, den) in af_definitions {
             rows.push(StatsRow {
-                currency: currency.clone(),
-                stat: name.to_string(),
+                currency: currency_code,
+                stat: name,
                 numerator: num,
                 denominator: den,
-                value: format_factor(num, den),
+                value: round_factor(num, den),
             });
         }
 
         for (name, num, den) in afq_definitions {
             rows.push(StatsRow {
-                currency: currency.clone(),
-                stat: name.to_string(),
+                currency: currency_code,
+                stat: name,
                 numerator: num,
                 denominator: den,
-                value: format_pct(num, den),
+                value: round_pct(num, den),
             });
         }
     }
