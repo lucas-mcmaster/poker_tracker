@@ -51,24 +51,79 @@ impl ResultsRow {
     }
 }
 
-struct StakeGroup {
-    small_blind_micros: i64,
-    big_blind_micros: i64,
-    hands: i64,
-    net_micros: i64,
-    rake_micros: i64,
-    fees_micros: i64,
-    blinds_micros: i64,
-    straddles_micros: i64,
-    allin_hands: i64,
-    ev_net_micros: i64,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StakeGroup {
+    pub small_blind_micros: i64,
+    pub big_blind_micros: i64,
+    pub hands: i64,
+    pub net_micros: i64,
+    pub rake_micros: i64,
+    pub fees_micros: i64,
+    pub blinds_micros: i64,
+    pub straddles_micros: i64,
+    pub allin_hands: i64,
+    pub ev_net_micros: i64,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ResultTotals {
+    pub hands: i64,
+    pub net_micros: i64,
+    pub rake_micros: i64,
+    pub fees_micros: i64,
+    pub blinds_micros: i64,
+    pub straddles_micros: i64,
+    pub allin_hands: i64,
+    pub ev_net_micros: i64,
+}
+
+pub(crate) fn aggregate_result_totals(groups: &[StakeGroup]) -> Result<ResultTotals, ReportError> {
+    let mut totals = ResultTotals::default();
+    for g in groups {
+        totals.hands = totals
+            .hands
+            .checked_add(g.hands)
+            .ok_or(ReportError::ArithmeticOverflow { figure: "hands" })?;
+        totals.net_micros = totals
+            .net_micros
+            .checked_add(g.net_micros)
+            .ok_or(ReportError::ArithmeticOverflow { figure: "net" })?;
+        totals.rake_micros = totals
+            .rake_micros
+            .checked_add(g.rake_micros)
+            .ok_or(ReportError::ArithmeticOverflow { figure: "rake" })?;
+        totals.fees_micros = totals
+            .fees_micros
+            .checked_add(g.fees_micros)
+            .ok_or(ReportError::ArithmeticOverflow { figure: "fees" })?;
+        totals.blinds_micros = totals
+            .blinds_micros
+            .checked_add(g.blinds_micros)
+            .ok_or(ReportError::ArithmeticOverflow { figure: "blinds" })?;
+        totals.straddles_micros = totals
+            .straddles_micros
+            .checked_add(g.straddles_micros)
+            .ok_or(ReportError::ArithmeticOverflow {
+                figure: "straddles",
+            })?;
+        totals.allin_hands = totals.allin_hands.checked_add(g.allin_hands).ok_or(
+            ReportError::ArithmeticOverflow {
+                figure: "allin_hands",
+            },
+        )?;
+        totals.ev_net_micros = totals
+            .ev_net_micros
+            .checked_add(g.ev_net_micros)
+            .ok_or(ReportError::ArithmeticOverflow { figure: "ev_net" })?;
+    }
+    Ok(totals)
 }
 
 pub(crate) fn build_results_rows(
     tx: &Transaction,
     stakes_filter: Option<&[Stakes]>,
 ) -> Result<Vec<ResultsRow>, ReportError> {
-    let (clause, params) = super::stakes_clause(stakes_filter);
+    let sel = super::selection(stakes_filter);
     let sql = format!(
         "SELECT \
             h.currency, \
@@ -82,17 +137,18 @@ pub(crate) fn build_results_rows(
             SUM(hps.straddles_posted_micros), \
             SUM(hps.ev_qualified), \
             SUM(hps.ev_net_micros) \
-         FROM hands h \
-         JOIN hand_players hp ON hp.hand_id = h.id AND hp.is_hero = 1 \
-         JOIN hand_player_stats hps ON hps.hand_id = hp.hand_id AND hps.player_id = hp.player_id \
-         WHERE 1 = 1 {clause} \
+         {} \
          GROUP BY h.currency, h.big_blind_micros, h.small_blind_micros \
-         ORDER BY h.currency ASC, h.big_blind_micros ASC, h.small_blind_micros ASC"
+         ORDER BY h.currency ASC, h.big_blind_micros ASC, h.small_blind_micros ASC",
+        sel.sql
     );
 
     let mut stmt = tx.prepare(&sql)?;
-    let rusqlite_params: Vec<&dyn rusqlite::ToSql> =
-        params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+    let rusqlite_params: Vec<&dyn rusqlite::ToSql> = sel
+        .params
+        .iter()
+        .map(|v| v as &dyn rusqlite::ToSql)
+        .collect();
 
     let mut rows_by_currency: BTreeMap<String, Vec<StakeGroup>> = BTreeMap::new();
     let mut query_rows = stmt.query(rusqlite_params.as_slice())?;
@@ -130,28 +186,11 @@ pub(crate) fn build_results_rows(
     let mut result_rows = Vec::new();
 
     for (currency, groups) in rows_by_currency {
-        let mut total_hands: i64 = 0;
-        let mut total_net: i64 = 0;
-        let mut total_rake: i64 = 0;
-        let mut total_fees: i64 = 0;
-        let mut total_blinds: i64 = 0;
-        let mut total_straddles: i64 = 0;
-        let mut total_allin_hands: i64 = 0;
-        let mut total_ev_net: i64 = 0;
-        // The ALL row sums net and ev_net per big blind, so two stakes with one big blind divide once.
+        let totals = aggregate_result_totals(&groups)?;
         let mut total_bb_won = BbWon::default();
         let mut total_ev_bb_won = BbWon::default();
 
         for g in &groups {
-            total_hands = total_hands.saturating_add(g.hands);
-            total_net = total_net.saturating_add(g.net_micros);
-            total_rake = total_rake.saturating_add(g.rake_micros);
-            total_fees = total_fees.saturating_add(g.fees_micros);
-            total_blinds = total_blinds.saturating_add(g.blinds_micros);
-            total_straddles = total_straddles.saturating_add(g.straddles_micros);
-            total_allin_hands = total_allin_hands.saturating_add(g.allin_hands);
-            total_ev_net = total_ev_net.saturating_add(g.ev_net_micros);
-
             let net_dec = Decimal::new(g.net_micros, 6);
             let net_per_100_dec = (net_dec / Decimal::from(g.hands)) * Decimal::from(100);
 
@@ -190,32 +229,71 @@ pub(crate) fn build_results_rows(
             });
         }
 
-        if groups.len() > 1 && total_hands > 0 {
-            let net_dec = Decimal::new(total_net, 6);
-            let net_per_100_dec = (net_dec / Decimal::from(total_hands)) * Decimal::from(100);
+        if groups.len() > 1 && totals.hands > 0 {
+            let net_dec = Decimal::new(totals.net_micros, 6);
+            let net_per_100_dec = (net_dec / Decimal::from(totals.hands)) * Decimal::from(100);
             let total_bb_won_str = total_bb_won.format_bb_won("bb_won")?;
-            let bb_per_100_str = total_bb_won.format_bb_per_100(total_hands, "bb_per_100")?;
+            let bb_per_100_str = total_bb_won.format_bb_per_100(totals.hands, "bb_per_100")?;
             let ev_bb_per_100_str =
-                total_ev_bb_won.format_bb_per_100(total_hands, "ev_bb_per_100")?;
+                total_ev_bb_won.format_bb_per_100(totals.hands, "ev_bb_per_100")?;
 
             result_rows.push(ResultsRow {
                 currency,
                 stakes: "ALL".to_string(),
-                hands: total_hands,
-                net: format_exact_money(total_net),
+                hands: totals.hands,
+                net: format_exact_money(totals.net_micros),
                 net_per_100: format_fixed2(net_per_100_dec),
                 bb_won: total_bb_won_str,
                 bb_per_100: bb_per_100_str,
-                rake: format_exact_money(total_rake),
-                fees: format_exact_money(total_fees),
-                blinds: format_exact_money(total_blinds),
-                straddles: format_exact_money(total_straddles),
-                allin_hands: total_allin_hands,
-                ev_net: format_exact_money(total_ev_net),
+                rake: format_exact_money(totals.rake_micros),
+                fees: format_exact_money(totals.fees_micros),
+                blinds: format_exact_money(totals.blinds_micros),
+                straddles: format_exact_money(totals.straddles_micros),
+                allin_hands: totals.allin_hands,
+                ev_net: format_exact_money(totals.ev_net_micros),
                 ev_bb_per_100: ev_bb_per_100_str,
             });
         }
     }
 
     Ok(result_rows)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn results_total_net_overflow_returns_error() {
+        let g1 = StakeGroup {
+            small_blind_micros: 50_000,
+            big_blind_micros: 100_000,
+            hands: 1,
+            net_micros: i64::MAX,
+            rake_micros: 0,
+            fees_micros: 0,
+            blinds_micros: 0,
+            straddles_micros: 0,
+            allin_hands: 0,
+            ev_net_micros: 0,
+        };
+        let g2 = StakeGroup {
+            small_blind_micros: 50_000,
+            big_blind_micros: 100_000,
+            hands: 1,
+            net_micros: 1,
+            rake_micros: 0,
+            fees_micros: 0,
+            blinds_micros: 0,
+            straddles_micros: 0,
+            allin_hands: 0,
+            ev_net_micros: 0,
+        };
+        let err = aggregate_result_totals(&[g1, g2]).unwrap_err();
+        assert!(matches!(
+            err,
+            ReportError::ArithmeticOverflow { figure: "net" }
+        ));
+    }
 }

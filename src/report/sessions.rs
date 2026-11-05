@@ -179,7 +179,7 @@ pub(crate) fn build_sessions_rows(
     tx: &Transaction,
     stakes_filter: Option<&[Stakes]>,
 ) -> Result<Vec<SessionsRow>, ReportError> {
-    let (clause, params) = super::stakes_clause(stakes_filter);
+    let sel = super::selection(stakes_filter);
     let sql = format!(
         "SELECT \
             h.platform, \
@@ -191,15 +191,16 @@ pub(crate) fn build_sessions_rows(
             hp.net_micros, \
             h.big_blind_micros, \
             hps.ev_net_micros \
-         FROM hands h \
-         JOIN hand_players hp ON hp.hand_id = h.id AND hp.is_hero = 1 \
-         JOIN hand_player_stats hps ON hps.hand_id = hp.hand_id AND hps.player_id = hp.player_id \
-         WHERE 1 = 1 {clause}"
+         {}",
+        sel.sql
     );
 
     let mut stmt = tx.prepare(&sql)?;
-    let rusqlite_params: Vec<&dyn rusqlite::ToSql> =
-        params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+    let rusqlite_params: Vec<&dyn rusqlite::ToSql> = sel
+        .params
+        .iter()
+        .map(|v| v as &dyn rusqlite::ToSql)
+        .collect();
     let mut query_rows = stmt.query(rusqlite_params.as_slice())?;
 
     let mut hands = Vec::new();
@@ -229,17 +230,31 @@ pub(crate) fn build_sessions_rows(
     Ok(rows)
 }
 
+pub(crate) fn aggregate_session_net(
+    hands: impl IntoIterator<Item = (i64, i64)>,
+) -> Result<(i64, i64), ReportError> {
+    let mut total_net: i64 = 0;
+    let mut total_ev_net: i64 = 0;
+    for (net, ev_net) in hands {
+        total_net = total_net
+            .checked_add(net)
+            .ok_or(ReportError::ArithmeticOverflow { figure: "net" })?;
+        total_ev_net = total_ev_net
+            .checked_add(ev_net)
+            .ok_or(ReportError::ArithmeticOverflow { figure: "ev_net" })?;
+    }
+    Ok((total_net, total_ev_net))
+}
+
 /// One session's CSV row (`None` only for an empty session, which `group_sessions` never makes).
 fn session_row(session: &[TimedHand]) -> Result<Option<SessionsRow>, ReportError> {
     let (Some((_, first)), Some((_, last))) = (session.first(), session.last()) else {
         return Ok(None);
     };
-    let mut total_net: i64 = 0;
-    let mut total_ev_net: i64 = 0;
+    let (total_net, total_ev_net) =
+        aggregate_session_net(session.iter().map(|(_, h)| (h.net_micros, h.ev_net_micros)))?;
     let mut bb_won = BbWon::default();
     for (_, hand) in session {
-        total_net = total_net.saturating_add(hand.net_micros);
-        total_ev_net = total_ev_net.saturating_add(hand.ev_net_micros);
         bb_won.add(hand.big_blind_micros, hand.net_micros);
     }
     let hands = i64::try_from(session.len()).unwrap_or(i64::MAX);
@@ -263,6 +278,15 @@ fn session_row(session: &[TimedHand]) -> Result<Option<SessionsRow>, ReportError
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn sessions_total_net_overflow_returns_error() {
+        let err = aggregate_session_net([(i64::MAX, 0), (1, 0)]).unwrap_err();
+        assert!(matches!(
+            err,
+            ReportError::ArithmeticOverflow { figure: "net" }
+        ));
+    }
 
     fn hand(platform: &str, table: &str, id: &str, ts: &str, offset: Option<i64>) -> HandEntry {
         hand_in(platform, "CAD", table, id, ts, offset)

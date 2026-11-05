@@ -18,15 +18,53 @@ use rust_decimal::Decimal;
 use crate::domain::canonical::{ActionType, AdjustmentKind, CanonicalHand, Street};
 use crate::domain::{Card, decimal_to_micro_units};
 
+use serde::Serialize;
+
 /// Current version of the derived statistics cache schema and definitions.
 pub const STATS_VERSION: i64 = 4;
 
+/// The role and value space of a derived statistics column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColumnKind {
+    Flag,
+    Count,
+    Money,
+    EquityNumerator,
+    EquityDenominator,
+}
+
+/// Metadata describing a derived statistics cache column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ColumnSpec {
+    pub name: &'static str,
+    pub kind: ColumnKind,
+    pub signed: bool,
+}
+
 macro_rules! define_stats_columns {
-    ($( $col:ident ),* $(,)?) => {
+    ($( ($col:ident, $kind:ident $(, $signed:ident)? ) ),* $(,)?) => {
         /// Derived statistics cache columns in schema order.
         pub const COLUMNS: &[&str] = &[
             $( stringify!($col) ),*
         ];
+
+        /// Derived statistics column specifications in schema order.
+        pub const COLUMN_SPECS: &[ColumnSpec] = &[
+            $(
+                ColumnSpec {
+                    name: stringify!($col),
+                    kind: ColumnKind::$kind,
+                    signed: define_stats_columns!(@signed $($signed)?),
+                }
+            ),*
+        ];
+
+        /// Looks up a column specification by name.
+        #[must_use]
+        pub fn column_spec(name: &str) -> Option<&'static ColumnSpec> {
+            COLUMN_SPECS.iter().find(|s| s.name == name)
+        }
 
         /// Statistics and counters for one player in one hand.
         #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,94 +110,96 @@ macro_rules! define_stats_columns {
             }
         }
     };
+    (@signed signed) => { true };
+    (@signed) => { false };
 }
 
 define_stats_columns! {
     // Preflop (stats.md §4.1)
-    hands,
-    p_walk,
-    p_vpip,
-    p_pfr_opp,
-    p_pfr,
-    p_rfi_opp,
-    p_rfi,
-    p_3bet_opp,
-    p_3bet,
-    p_3bet_faced,
-    p_3bet_fold,
-    p_3bet_call,
-    p_4bet_opp,
-    p_4bet,
-    p_4bet_faced,
-    p_4bet_fold,
-    p_4bet_call,
-    p_cc_opp,
-    p_cc,
-    p_steal_opp,
-    p_steal,
-    p_sb_steal_faced,
-    p_sb_steal_fold,
-    p_sb_steal_raise,
-    p_bb_steal_faced,
-    p_bb_steal_fold,
-    p_bb_steal_raise,
+    (hands, Flag),
+    (p_walk, Flag),
+    (p_vpip, Flag),
+    (p_pfr_opp, Flag),
+    (p_pfr, Flag),
+    (p_rfi_opp, Flag),
+    (p_rfi, Flag),
+    (p_3bet_opp, Flag),
+    (p_3bet, Flag),
+    (p_3bet_faced, Flag),
+    (p_3bet_fold, Flag),
+    (p_3bet_call, Flag),
+    (p_4bet_opp, Flag),
+    (p_4bet, Flag),
+    (p_4bet_faced, Flag),
+    (p_4bet_fold, Flag),
+    (p_4bet_call, Flag),
+    (p_cc_opp, Flag),
+    (p_cc, Flag),
+    (p_steal_opp, Flag),
+    (p_steal, Flag),
+    (p_sb_steal_faced, Flag),
+    (p_sb_steal_fold, Flag),
+    (p_sb_steal_raise, Flag),
+    (p_bb_steal_faced, Flag),
+    (p_bb_steal_fold, Flag),
+    (p_bb_steal_raise, Flag),
 
     // Postflop (stats.md §4.2)
-    f_saw,
-    t_saw,
-    r_saw,
-    f_cbet_opp,
-    f_cbet,
-    f_cbet_faced,
-    f_cbet_fold,
-    f_cbet_call,
-    f_cbet_raise,
-    t_cbet_opp,
-    t_cbet,
-    t_cbet_faced,
-    t_cbet_fold,
-    t_cbet_call,
-    t_cbet_raise,
-    f_xr_opp,
-    f_xr,
+    (f_saw, Flag),
+    (t_saw, Flag),
+    (r_saw, Flag),
+    (f_cbet_opp, Flag),
+    (f_cbet, Flag),
+    (f_cbet_faced, Flag),
+    (f_cbet_fold, Flag),
+    (f_cbet_call, Flag),
+    (f_cbet_raise, Flag),
+    (t_cbet_opp, Flag),
+    (t_cbet, Flag),
+    (t_cbet_faced, Flag),
+    (t_cbet_fold, Flag),
+    (t_cbet_call, Flag),
+    (t_cbet_raise, Flag),
+    (f_xr_opp, Flag),
+    (f_xr, Flag),
 
     // Action counts and outcome (stats.md §4.3)
-    sd_went,
-    sd_won,
-    won_hand,
-    f_saw_won,
-    p_bets,
-    p_raises,
-    p_calls,
-    p_checks,
-    p_folds,
-    f_bets,
-    f_raises,
-    f_calls,
-    f_checks,
-    f_folds,
-    t_bets,
-    t_raises,
-    t_calls,
-    t_checks,
-    t_folds,
-    r_bets,
-    r_raises,
-    r_calls,
-    r_checks,
-    r_folds,
+    (sd_went, Flag),
+    (sd_won, Flag),
+    (won_hand, Flag),
+    (f_saw_won, Flag),
+    (p_bets, Count),
+    (p_raises, Count),
+    (p_calls, Count),
+    (p_checks, Count),
+    (p_folds, Count),
+    (f_bets, Count),
+    (f_raises, Count),
+    (f_calls, Count),
+    (f_checks, Count),
+    (f_folds, Count),
+    (t_bets, Count),
+    (t_raises, Count),
+    (t_calls, Count),
+    (t_checks, Count),
+    (t_folds, Count),
+    (r_bets, Count),
+    (r_raises, Count),
+    (r_calls, Count),
+    (r_checks, Count),
+    (r_folds, Count),
 
     // Money (stats.md §6.1)
-    rake_attributed_micros,
-    fees_attributed_micros,
-    blinds_posted_micros,
-    straddles_posted_micros,
+    (rake_attributed_micros, Money),
+    (fees_attributed_micros, Money),
+    (blinds_posted_micros, Money),
+    (straddles_posted_micros, Money),
 
     // All-in equity (stats.md §6.2)
-    ev_qualified,
-    ev_equity_num,
-    ev_equity_den,
-    ev_net_micros,
+    (ev_qualified, Flag),
+    (ev_equity_num, EquityNumerator),
+    (ev_equity_den, EquityDenominator),
+    (ev_net_micros, Money, signed),
 }
 
 pub(crate) struct ReplayState<'a> {

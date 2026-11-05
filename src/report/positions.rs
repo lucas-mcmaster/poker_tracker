@@ -40,16 +40,67 @@ impl PositionsRow {
 }
 
 #[derive(Default)]
-struct PositionAgg {
-    hands: i64,
-    net_micros: i64,
-    bb_won: BbWon,
-    p_walk: i64,
-    p_vpip: i64,
-    p_pfr_opp: i64,
-    p_pfr: i64,
-    p_rfi_opp: i64,
-    p_rfi: i64,
+pub(crate) struct PositionAgg {
+    pub hands: i64,
+    pub net_micros: i64,
+    pub bb_won: BbWon,
+    pub p_walk: i64,
+    pub p_vpip: i64,
+    pub p_pfr_opp: i64,
+    pub p_pfr: i64,
+    pub p_rfi_opp: i64,
+    pub p_rfi: i64,
+}
+
+impl PositionAgg {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn add_group(
+        &mut self,
+        hands: i64,
+        net_micros: i64,
+        bb_micros: i64,
+        p_walk: i64,
+        p_vpip: i64,
+        p_pfr_opp: i64,
+        p_pfr: i64,
+        p_rfi_opp: i64,
+        p_rfi: i64,
+    ) -> Result<(), ReportError> {
+        self.hands = self
+            .hands
+            .checked_add(hands)
+            .ok_or(ReportError::ArithmeticOverflow { figure: "hands" })?;
+        self.net_micros = self
+            .net_micros
+            .checked_add(net_micros)
+            .ok_or(ReportError::ArithmeticOverflow { figure: "net" })?;
+        self.bb_won.add(bb_micros, net_micros);
+        self.p_walk = self
+            .p_walk
+            .checked_add(p_walk)
+            .ok_or(ReportError::ArithmeticOverflow { figure: "vpip" })?;
+        self.p_vpip = self
+            .p_vpip
+            .checked_add(p_vpip)
+            .ok_or(ReportError::ArithmeticOverflow { figure: "vpip" })?;
+        self.p_pfr_opp = self
+            .p_pfr_opp
+            .checked_add(p_pfr_opp)
+            .ok_or(ReportError::ArithmeticOverflow { figure: "pfr" })?;
+        self.p_pfr = self
+            .p_pfr
+            .checked_add(p_pfr)
+            .ok_or(ReportError::ArithmeticOverflow { figure: "pfr" })?;
+        self.p_rfi_opp = self
+            .p_rfi_opp
+            .checked_add(p_rfi_opp)
+            .ok_or(ReportError::ArithmeticOverflow { figure: "rfi" })?;
+        self.p_rfi = self
+            .p_rfi
+            .checked_add(p_rfi)
+            .ok_or(ReportError::ArithmeticOverflow { figure: "rfi" })?;
+        Ok(())
+    }
 }
 
 const ORDERED_LABELS: &[&str] = &["EP", "MP", "CO", "BTN", "SB", "BB", "?"];
@@ -58,7 +109,7 @@ pub(crate) fn build_positions_rows(
     tx: &Transaction,
     stakes_filter: Option<&[Stakes]>,
 ) -> Result<Vec<PositionsRow>, ReportError> {
-    let (clause, params) = super::stakes_clause(stakes_filter);
+    let sel = super::selection(stakes_filter);
     let sql = format!(
         "SELECT \
             h.currency, \
@@ -73,17 +124,18 @@ pub(crate) fn build_positions_rows(
             SUM(hps.p_pfr), \
             SUM(hps.p_rfi_opp), \
             SUM(hps.p_rfi) \
-         FROM hands h \
-         JOIN hand_players hp ON hp.hand_id = h.id AND hp.is_hero = 1 \
-         JOIN hand_player_stats hps ON hps.hand_id = hp.hand_id AND hps.player_id = hp.player_id \
-         WHERE 1 = 1 {clause} \
+         {} \
          GROUP BY h.currency, hps.position, h.max_seats, h.big_blind_micros \
-         ORDER BY h.currency ASC"
+         ORDER BY h.currency ASC",
+        sel.sql
     );
 
     let mut stmt = tx.prepare(&sql)?;
-    let rusqlite_params: Vec<&dyn rusqlite::ToSql> =
-        params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+    let rusqlite_params: Vec<&dyn rusqlite::ToSql> = sel
+        .params
+        .iter()
+        .map(|v| v as &dyn rusqlite::ToSql)
+        .collect();
 
     let mut agg_by_currency: BTreeMap<String, BTreeMap<&'static str, PositionAgg>> =
         BTreeMap::new();
@@ -114,15 +166,9 @@ pub(crate) fn build_positions_rows(
             .entry(label)
             .or_default();
 
-        entry.hands = entry.hands.saturating_add(hands);
-        entry.net_micros = entry.net_micros.saturating_add(net_micros);
-        entry.bb_won.add(bb_micros, net_micros);
-        entry.p_walk = entry.p_walk.saturating_add(p_walk);
-        entry.p_vpip = entry.p_vpip.saturating_add(p_vpip);
-        entry.p_pfr_opp = entry.p_pfr_opp.saturating_add(p_pfr_opp);
-        entry.p_pfr = entry.p_pfr.saturating_add(p_pfr);
-        entry.p_rfi_opp = entry.p_rfi_opp.saturating_add(p_rfi_opp);
-        entry.p_rfi = entry.p_rfi.saturating_add(p_rfi);
+        entry.add_group(
+            hands, net_micros, bb_micros, p_walk, p_vpip, p_pfr_opp, p_pfr, p_rfi_opp, p_rfi,
+        )?;
     }
 
     let mut rows = Vec::new();
@@ -151,4 +197,25 @@ pub(crate) fn build_positions_rows(
     }
 
     Ok(rows)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn positions_merge_hands_overflow_returns_error() {
+        let mut entry = PositionAgg::default();
+        entry
+            .add_group(i64::MAX, 0, 100_000, 0, 0, 0, 0, 0, 0)
+            .unwrap();
+        let err = entry
+            .add_group(1, 0, 100_000, 0, 0, 0, 0, 0, 0)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ReportError::ArithmeticOverflow { figure: "hands" }
+        ));
+    }
 }

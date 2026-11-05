@@ -1293,3 +1293,37 @@ fn only_a_v3_4_shape_is_taken_for_a_v3_4_database() {
         );
     }
 }
+
+#[test]
+fn hand_player_stats_schema_and_index_sql_hash() {
+    let repo = SqliteRepository::open_in_memory().unwrap();
+    let table_sql: String = repo
+        .connection()
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'hand_player_stats'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(table_sql.len(), 4242);
+    use sha2::{Digest, Sha256};
+    let table_digest = format!("{:x}", Sha256::digest(table_sql.as_bytes()));
+    assert_eq!(
+        table_digest,
+        "d15e06c9474da75be98319f2091430b7e207f3f26bf792e4d8cf456f80a0d6fb"
+    );
+
+    let index_sql: String = repo
+        .connection()
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_hand_player_stats_player'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let index_digest = format!("{:x}", Sha256::digest(index_sql.as_bytes()));
+    assert_eq!(
+        index_digest,
+        "b909b540d7db74d79c2d46ea9c999058e2e6ddbcc321b4178aafe406a79501e2"
+    );
+}

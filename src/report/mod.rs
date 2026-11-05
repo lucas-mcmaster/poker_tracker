@@ -3,18 +3,20 @@
 pub mod format;
 pub mod positions;
 pub mod results;
+pub(crate) mod selection;
 pub mod sessions;
 pub mod stats;
+
+pub use crate::domain::money::Stakes;
+pub(crate) use selection::selection;
 
 use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 use std::str::FromStr;
 
 use rusqlite::OptionalExtension;
-use rust_decimal::Decimal;
 use thiserror::Error;
 
-use crate::domain::money::{decimal_to_micro_units, micro_units_to_decimal};
 use crate::storage::{SqliteRepository, StorageError};
 
 /// The four supported report kinds.
@@ -39,78 +41,6 @@ impl FromStr for ReportKind {
                 "unknown report kind '{s}': expected results, positions, sessions, or stats"
             )),
         }
-    }
-}
-
-/// Blinds pair identifying a stake level.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Stakes {
-    pub small_blind_micros: i64,
-    pub big_blind_micros: i64,
-}
-
-impl FromStr for Stakes {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let Some((sb_raw, bb_raw)) = s.split_once('/') else {
-            return Err(format!("invalid stakes '{s}': expected <sb>/<bb>"));
-        };
-        let sb_str = sb_raw.trim();
-        let bb_str = bb_raw.trim();
-        if sb_str.is_empty() || bb_str.is_empty() {
-            return Err(format!("invalid stakes '{s}': empty blind amount"));
-        }
-        if !is_plain_decimal(sb_str) || !is_plain_decimal(bb_str) {
-            return Err(format!(
-                "invalid stakes '{s}': amounts must be plain decimals such as 0.05/0.1"
-            ));
-        }
-
-        let sb: Decimal = sb_str
-            .parse()
-            .map_err(|e| format!("invalid small blind '{sb_str}': {e}"))?;
-        let bb: Decimal = bb_str
-            .parse()
-            .map_err(|e| format!("invalid big blind '{bb_str}': {e}"))?;
-
-        if sb <= Decimal::ZERO || bb <= Decimal::ZERO {
-            return Err(format!("invalid stakes '{s}': amounts must be positive"));
-        }
-        if sb.scale() > 6 || bb.scale() > 6 {
-            return Err(format!("invalid stakes '{s}': at most 6 decimal places"));
-        }
-
-        let small_blind_micros =
-            decimal_to_micro_units(sb).ok_or_else(|| format!("invalid small blind '{sb_str}'"))?;
-        let big_blind_micros =
-            decimal_to_micro_units(bb).ok_or_else(|| format!("invalid big blind '{bb_str}'"))?;
-
-        Ok(Self {
-            small_blind_micros,
-            big_blind_micros,
-        })
-    }
-}
-
-/// True when `s` is ASCII digits with at most one `.`, which has digits on both sides. This
-/// rejects what `Decimal`'s parser would also take: signs, `_` separators and exponents.
-fn is_plain_decimal(s: &str) -> bool {
-    let all_digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
-    match s.split_once('.') {
-        None => all_digits(s),
-        Some((whole, fraction)) => all_digits(whole) && all_digits(fraction),
-    }
-}
-
-impl std::fmt::Display for Stakes {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}/{}",
-            micro_units_to_decimal(self.small_blind_micros),
-            micro_units_to_decimal(self.big_blind_micros)
-        )
     }
 }
 
@@ -334,27 +264,6 @@ impl BbWon {
     }
 }
 
-pub(crate) fn stakes_clause(stakes: Option<&[Stakes]>) -> (String, Vec<rusqlite::types::Value>) {
-    match stakes {
-        None => (String::new(), Vec::new()),
-        Some([]) => (" AND 1 = 0".to_string(), Vec::new()),
-        Some(list) => {
-            let mut clause = String::from(" AND (");
-            let mut params = Vec::with_capacity(list.len() * 2);
-            for (i, s) in list.iter().enumerate() {
-                if i > 0 {
-                    clause.push_str(" OR ");
-                }
-                clause.push_str("(h.small_blind_micros = ? AND h.big_blind_micros = ?)");
-                params.push(rusqlite::types::Value::Integer(s.small_blind_micros));
-                params.push(rusqlite::types::Value::Integer(s.big_blind_micros));
-            }
-            clause.push(')');
-            (clause, params)
-        }
-    }
-}
-
 /// Generates a CSV report and writes it to `out`.
 ///
 /// Runs entirely in one read transaction. The first read is the statistics cache
@@ -403,13 +312,16 @@ pub fn write_report(
     let unmatched_stakes = match &dedup_stakes {
         Some(stakes) => {
             let mut unmatched = Vec::new();
-            let mut stmt = tx.prepare_cached(
-                "SELECT 1 FROM hands h \
-                 JOIN hand_players hp ON hp.hand_id = h.id AND hp.is_hero = 1 \
-                 WHERE h.small_blind_micros = ?1 AND h.big_blind_micros = ?2 LIMIT 1",
-            )?;
             for s in stakes {
-                let exists: bool = stmt.exists([s.small_blind_micros, s.big_blind_micros])?;
+                let sel = selection(Some(&[*s]));
+                let sql = format!("SELECT 1 {} LIMIT 1", sel.sql);
+                let mut stmt = tx.prepare_cached(&sql)?;
+                let rusqlite_params: Vec<&dyn rusqlite::ToSql> = sel
+                    .params
+                    .iter()
+                    .map(|v| v as &dyn rusqlite::ToSql)
+                    .collect();
+                let exists: bool = stmt.exists(rusqlite_params.as_slice())?;
                 if !exists {
                     unmatched.push(*s);
                 }

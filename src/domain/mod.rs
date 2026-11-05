@@ -11,6 +11,6 @@ pub use canonical::{
 };
 pub use card::{Card, CardParseError, Rank, Suit};
 pub use money::{
-    CurrencyCode, CurrencyParseError, MICRO_UNIT_DECIMALS, MICRO_UNIT_SCALE,
+    CurrencyCode, CurrencyParseError, MICRO_UNIT_DECIMALS, MICRO_UNIT_SCALE, Stakes,
     decimal_to_micro_units, micro_units_to_decimal,
 };

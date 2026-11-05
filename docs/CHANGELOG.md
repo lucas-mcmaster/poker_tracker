@@ -14,6 +14,10 @@ History only, never a specification. The current spec and living rules are liste
 | v3.2 | — | 55 | Fixes from the review of v3.1 against the real export: per-milestone file variants, lossless money, multi-run boards, dead blinds, EV Cashout, one-card shows, strict validation. |
 | v3.1 | — | — | The original blueprint (Milestone 2 did not compile). |
 
+## v3.7.1 → v3.8
+
+- **M17.1 (Column specs, one selection, checked report totals):** `ColumnSpec`/`ColumnKind`/`COLUMN_SPECS`/`column_spec` define metadata for all 76 stats cache columns (with storage `CHECK`s driven by `signed`); stats report sums and maps columns by name; reports and stakes probe unify under one `Selection` fragment; report totals in all four reports use checked addition; `Stakes` moves to `domain::money`.
+
 ## v3.7 → v3.7.1
 
 - **M16.1.1 (Exact `bb_won` aggregation):** `bb_won`, `bb/100`, and `ev_bb_per_100` aggregated as exact rational fractions over big blinds, rounded half-even to 2 decimals, with `ReportError::ArithmeticOverflow` on overflow.

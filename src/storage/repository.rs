@@ -526,8 +526,9 @@ fn create_hand_player_stats_sql() -> String {
          player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE RESTRICT,\n\
          position INTEGER CHECK (position IS NULL OR (position BETWEEN 0 AND 9)),\n",
     );
-    for col in crate::stats::COLUMNS {
-        if *col == "ev_net_micros" {
+    for spec in crate::stats::COLUMN_SPECS {
+        let col = spec.name;
+        if spec.signed {
             sql.push_str(&format!("{col} INTEGER NOT NULL,\n"));
         } else {
             sql.push_str(&format!("{col} INTEGER NOT NULL CHECK ({col} >= 0),\n"));

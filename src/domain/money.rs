@@ -115,6 +115,78 @@ impl<'de> Deserialize<'de> for CurrencyCode {
     }
 }
 
+/// Blinds pair identifying a stake level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Stakes {
+    pub small_blind_micros: i64,
+    pub big_blind_micros: i64,
+}
+
+impl FromStr for Stakes {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let Some((sb_raw, bb_raw)) = s.split_once('/') else {
+            return Err(format!("invalid stakes '{s}': expected <sb>/<bb>"));
+        };
+        let sb_str = sb_raw.trim();
+        let bb_str = bb_raw.trim();
+        if sb_str.is_empty() || bb_str.is_empty() {
+            return Err(format!("invalid stakes '{s}': empty blind amount"));
+        }
+        if !is_plain_decimal(sb_str) || !is_plain_decimal(bb_str) {
+            return Err(format!(
+                "invalid stakes '{s}': amounts must be plain decimals such as 0.05/0.1"
+            ));
+        }
+
+        let sb: Decimal = sb_str
+            .parse()
+            .map_err(|e| format!("invalid small blind '{sb_str}': {e}"))?;
+        let bb: Decimal = bb_str
+            .parse()
+            .map_err(|e| format!("invalid big blind '{bb_str}': {e}"))?;
+
+        if sb <= Decimal::ZERO || bb <= Decimal::ZERO {
+            return Err(format!("invalid stakes '{s}': amounts must be positive"));
+        }
+        if sb.scale() > 6 || bb.scale() > 6 {
+            return Err(format!("invalid stakes '{s}': at most 6 decimal places"));
+        }
+
+        let small_blind_micros =
+            decimal_to_micro_units(sb).ok_or_else(|| format!("invalid small blind '{sb_str}'"))?;
+        let big_blind_micros =
+            decimal_to_micro_units(bb).ok_or_else(|| format!("invalid big blind '{bb_str}'"))?;
+
+        Ok(Self {
+            small_blind_micros,
+            big_blind_micros,
+        })
+    }
+}
+
+/// True when `s` is ASCII digits with at most one `.`, which has digits on both sides. This
+/// rejects what `Decimal`'s parser would also take: signs, `_` separators and exponents.
+fn is_plain_decimal(s: &str) -> bool {
+    let all_digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    match s.split_once('.') {
+        None => all_digits(s),
+        Some((whole, fraction)) => all_digits(whole) && all_digits(fraction),
+    }
+}
+
+impl fmt::Display for Stakes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}/{}",
+            micro_units_to_decimal(self.small_blind_micros),
+            micro_units_to_decimal(self.big_blind_micros)
+        )
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

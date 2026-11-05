@@ -55,7 +55,7 @@ session file ──► ParserRegistry::detect ──► site parser (src/parser/
 
 | Module | Responsibility | May know about sites? |
 | :--- | :--- | :--- |
-| `domain/money.rs` | `CurrencyCode`, micro-unit conversion | No |
+| `domain/money.rs` | `CurrencyCode`, micro-unit conversion, `Stakes` | No |
 | `domain/card.rs` | 1-byte `Card` (`rank << 2 \| suit`), `Rank`, `Suit` | No |
 | `domain/canonical.rs` | Canonical hand model, per-player results, stored identifiers | Only `Platform` variants |
 | `parser/base.rs` | `ParseError`, `HandParser` trait, `HandBlock`, splitter, `validate_hand` | No |
@@ -76,6 +76,9 @@ session file ──► ParserRegistry::detect ──► site parser (src/parser/
 - `CurrencyCode([u8; 3])`: exactly 3 uppercase ASCII letters, valid by construction
   (`FromStr`, `from_bytes`, consts `CAD`/`USD`/`EUR`/`GBP`); serializes as a string. The CLI
   upper-cases its option before parsing.
+- `Stakes { small_blind_micros: i64, big_blind_micros: i64 }` is a domain type (`domain::money`)
+  implementing `FromStr` for `<sb>/<bb>` and `Display` in the report's `stakes` format;
+  re-exported in `report`.
 - Every `HandHeader` has a `currency`; every money column is in that hand's currency. Aggregate
   per currency (`GROUP BY hands.currency`); never sum across currencies.
 - Where a currency comes from is a parser concern: read it from the file if the site prints it,
@@ -160,7 +163,8 @@ rules, are in `docs/invariants.md` §1 and §2.
   `quarantined_hands(run, raw_sha256, raw_text, parser, site_hand_id, stage, error, file,
   line)`; view `quarantine_pending` (quarantined texts not stored as a hand);
   `derived_cache(name, version, built_at)`; the cache table `hand_player_stats` (created by the
-  rebuild, not by `MIGRATIONS`, with `idx_hand_player_stats_player(player_id, hand_id)`).
+  rebuild, not by `MIGRATIONS`, with `idx_hand_player_stats_player(player_id, hand_id)`;
+  `CHECK (<col> >= 0)` constraints driven by `COLUMN_SPECS.signed`).
 - **Inserts:** one `BEGIN IMMEDIATE` transaction per batch, one savepoint per hand, 5 s busy
   timeout (`DEFAULT_BUSY_TIMEOUT`). Validation, conversion, conflict and constraint errors reject
   that hand (`BatchInsertStats::rejected`); lock, I/O and other database-wide errors return
@@ -249,8 +253,12 @@ rules, are in `docs/invariants.md` §1 and §2.
   with no players, which yields no rows). It uses checked or saturating integer arithmetic and
   `i128` for money products, treats a missing lookup as "no opportunity" (never an error), and
   fails closed on unrepresentable amounts (`docs/invariants.md` §3).
+- `pub const COLUMN_SPECS: &[ColumnSpec]` lists every column's name, `ColumnKind` (`Flag`,
+  `Count`, `Money`, `EquityNumerator`, `EquityDenominator`), and `signed` flag in schema order.
+  `column_spec(name)` looks up a spec by name.
 - `pub const COLUMNS: &[&str]` lists every counter and stored money/equity column of
-  `docs/stats.md` in schema order. It is the single source for the `hand_player_stats` schema.
+  `docs/stats.md` in schema order (equal to `COLUMN_SPECS` names). It is the single source for the
+  `hand_player_stats` schema.
   `PlayerHandStats` exposes the player name, `position: Option<u8>` (codes of `stats.md` §2) and
   each column by name: `fn get(&self, column: &str) -> Option<i64>`.
 - `pub fn exact_equity(hole_cards: &[[Card; 2]], board: &[Card]) -> Option<Vec<(u64, u64)>>`:
@@ -265,16 +273,18 @@ rules, are in `docs/invariants.md` §1 and §2.
 **`src/report/`:** `pub fn write_report(repo: &SqliteRepository, kind: ReportKind, options:
 &ReportOptions, out: &mut impl Write) -> Result<ReportOutcome, ReportError>`.
 
+- Every report query, and the unmatched-stakes probe, use one selection fragment
+  (`report::selection::selection`) joining `hands h`, `hand_players hp` and `hand_player_stats hps`,
+  with aliases `h`, `hp`, and `hps`.
 - `ReportKind::{Results, Positions, Sessions, Stats}`.
 - `ReportOptions { stakes: Option<Vec<Stakes>> }`: `None` (the `Default`) means every stake. M17
   filters will subsume it; until then it is the only selection.
-- `Stakes { small_blind_micros: i64, big_blind_micros: i64 }` implements `FromStr` for
-  `<sb>/<bb>` and `Display` in the report's `stakes` format.
+- `Stakes` is a domain type (`crate::domain::money::Stakes`), re-exported from `report`.
 - `ReportOutcome { unmatched_stakes: Vec<Stakes> }`: the selected stakes that matched no hero
   hand, in the order given.
 - `ReportError::{Storage(StorageError), Io(std::io::Error), ArithmeticOverflow { figure:
-  &'static str }}`. A stale cache (`Storage(StaleDerivedCache { .. })`) or an overflow writes
-  nothing to `out`.
+  &'static str }}`. Report totals are checked; an overflow or a stale cache
+  (`Storage(StaleDerivedCache { .. })`) writes nothing to `out`.
 
 ## 9. Extending
 

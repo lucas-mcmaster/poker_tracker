@@ -233,10 +233,12 @@ in `docs/stats.md` depends on this policy.
 
 - **Hero only, per currency.** Every row covers the hero's hands in one currency. Currencies are
   listed alphabetically, and amounts are never added across them.
-- **Reading.** One read transaction, after the version guard. Reports read only integer columns,
+- **Reading.** One read transaction, after the version guard. Every report query, and the
+  unmatched-stakes probe, use one selection fragment joining `hands h`, `hand_players hp` and
+  `hand_player_stats hps` with aliases `h`, `hp`, and `hps`. Reports read only integer columns,
   integer `SUM`s and text columns; arithmetic and display follow `docs/stats.md` §1.2.
 - **Exact rates.** `bb_won`, `bb/100` and `ev_bb_per_100` (`docs/stats.md` §6.1–§6.2) use checked
-  `i128` fractions. A figure that does not fit fails the report with
+  `i128` fractions. Report totals are checked. A figure that does not fit fails the report with
   `ReportError::ArithmeticOverflow { figure }`, naming the figure. Nothing is written, and the
   CLI exits `1`.
 - **CSV.** A header line, then the rows, with LF endings. A database with no hands prints the

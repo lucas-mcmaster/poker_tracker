@@ -21,7 +21,8 @@ use poker_tracker::domain::{
 };
 use poker_tracker::parser::HandParser;
 use poker_tracker::stats::{
-    COLUMNS, PlayerHandStats, STATS_VERSION, assign_positions, derive_hand_stats, position_label,
+    COLUMN_SPECS, COLUMNS, PlayerHandStats, STATS_VERSION, assign_positions, derive_hand_stats,
+    position_label,
 };
 use support::{make_action, make_canonical_hand, make_player};
 
@@ -2060,4 +2061,130 @@ fn preflop_cashout_allowed_by_core_and_qualifies_for_equity() {
     assert_eq!(s_b.ev_equity_num, 6829);
     assert_eq!(s_b.ev_equity_den, 36432);
     assert_eq!(s_b.ev_net_micros, -6_251_098);
+}
+
+#[test]
+fn columns_equals_names_of_column_specs_in_order() {
+    let spec_names: Vec<&str> = COLUMN_SPECS.iter().map(|s| s.name).collect();
+    assert_eq!(COLUMNS, spec_names.as_slice());
+}
+
+#[test]
+fn column_specs_match_appendix_a() {
+    use poker_tracker::stats::{ColumnKind, column_spec};
+
+    let flags = [
+        // preflop (27)
+        "hands",
+        "p_walk",
+        "p_vpip",
+        "p_pfr_opp",
+        "p_pfr",
+        "p_rfi_opp",
+        "p_rfi",
+        "p_3bet_opp",
+        "p_3bet",
+        "p_3bet_faced",
+        "p_3bet_fold",
+        "p_3bet_call",
+        "p_4bet_opp",
+        "p_4bet",
+        "p_4bet_faced",
+        "p_4bet_fold",
+        "p_4bet_call",
+        "p_cc_opp",
+        "p_cc",
+        "p_steal_opp",
+        "p_steal",
+        "p_sb_steal_faced",
+        "p_sb_steal_fold",
+        "p_sb_steal_raise",
+        "p_bb_steal_faced",
+        "p_bb_steal_fold",
+        "p_bb_steal_raise",
+        // postflop (17)
+        "f_saw",
+        "t_saw",
+        "r_saw",
+        "f_cbet_opp",
+        "f_cbet",
+        "f_cbet_faced",
+        "f_cbet_fold",
+        "f_cbet_call",
+        "f_cbet_raise",
+        "t_cbet_opp",
+        "t_cbet",
+        "t_cbet_faced",
+        "t_cbet_fold",
+        "t_cbet_call",
+        "t_cbet_raise",
+        "f_xr_opp",
+        "f_xr",
+        // outcome (4)
+        "sd_went",
+        "sd_won",
+        "won_hand",
+        "f_saw_won",
+        // equity (1)
+        "ev_qualified",
+    ];
+    assert_eq!(flags.len(), 49);
+
+    let counts = [
+        "p_bets", "p_raises", "p_calls", "p_checks", "p_folds", "f_bets", "f_raises", "f_calls",
+        "f_checks", "f_folds", "t_bets", "t_raises", "t_calls", "t_checks", "t_folds", "r_bets",
+        "r_raises", "r_calls", "r_checks", "r_folds",
+    ];
+    assert_eq!(counts.len(), 20);
+
+    let unsigned_money = [
+        "rake_attributed_micros",
+        "fees_attributed_micros",
+        "blinds_posted_micros",
+        "straddles_posted_micros",
+    ];
+    assert_eq!(unsigned_money.len(), 4);
+
+    let signed_money = ["ev_net_micros"];
+    let eq_num = ["ev_equity_num"];
+    let eq_den = ["ev_equity_den"];
+
+    for name in flags {
+        let spec = column_spec(name).unwrap_or_else(|| panic!("missing {name}"));
+        assert_eq!(spec.kind, ColumnKind::Flag, "{name} kind");
+        assert!(!spec.signed, "{name} signed");
+    }
+    for name in counts {
+        let spec = column_spec(name).unwrap_or_else(|| panic!("missing {name}"));
+        assert_eq!(spec.kind, ColumnKind::Count, "{name} kind");
+        assert!(!spec.signed, "{name} signed");
+    }
+    for name in unsigned_money {
+        let spec = column_spec(name).unwrap_or_else(|| panic!("missing {name}"));
+        assert_eq!(spec.kind, ColumnKind::Money, "{name} kind");
+        assert!(!spec.signed, "{name} signed");
+    }
+    for name in signed_money {
+        let spec = column_spec(name).unwrap_or_else(|| panic!("missing {name}"));
+        assert_eq!(spec.kind, ColumnKind::Money, "{name} kind");
+        assert!(spec.signed, "{name} signed");
+    }
+    for name in eq_num {
+        let spec = column_spec(name).unwrap_or_else(|| panic!("missing {name}"));
+        assert_eq!(spec.kind, ColumnKind::EquityNumerator, "{name} kind");
+        assert!(!spec.signed, "{name} signed");
+    }
+    for name in eq_den {
+        let spec = column_spec(name).unwrap_or_else(|| panic!("missing {name}"));
+        assert_eq!(spec.kind, ColumnKind::EquityDenominator, "{name} kind");
+        assert!(!spec.signed, "{name} signed");
+    }
+
+    assert_eq!(COLUMN_SPECS.len(), 76);
+    let signed_cols: Vec<&str> = COLUMN_SPECS
+        .iter()
+        .filter(|s| s.signed)
+        .map(|s| s.name)
+        .collect();
+    assert_eq!(signed_cols, vec!["ev_net_micros"]);
 }
