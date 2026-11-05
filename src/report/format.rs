@@ -34,10 +34,10 @@ pub fn round_half_even_2dp(val: Decimal) -> Decimal {
     rounded
 }
 
-/// Computes `(num / den) * 100` rounded half-even to 2 decimal places, or `None` if `den <= 0`.
+/// Computes `(num / den) * 100` rounded half-even to 2 decimal places, or `None` if `den == 0`.
 #[must_use]
 pub fn round_pct(num: i64, den: i64) -> Option<Decimal> {
-    if den <= 0 {
+    if den == 0 {
         None
     } else {
         let val = (Decimal::from(num) / Decimal::from(den)) * Decimal::from(100);
@@ -45,10 +45,10 @@ pub fn round_pct(num: i64, den: i64) -> Option<Decimal> {
     }
 }
 
-/// Computes `num / den` rounded half-even to 2 decimal places, or `None` if `den <= 0`.
+/// Computes `num / den` rounded half-even to 2 decimal places, or `None` if `den == 0`.
 #[must_use]
 pub fn round_factor(num: i64, den: i64) -> Option<Decimal> {
-    if den <= 0 {
+    if den == 0 {
         None
     } else {
         let val = Decimal::from(num) / Decimal::from(den);

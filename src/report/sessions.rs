@@ -271,7 +271,8 @@ fn session_row(session: &[TimedHand]) -> Result<Option<SessionsRow>, ReportError
     for (_, hand) in session {
         bb_won.add(hand.big_blind_micros, hand.net_micros);
     }
-    let hands = i64::try_from(session.len()).unwrap_or(i64::MAX);
+    let hands = i64::try_from(session.len())
+        .map_err(|_| ReportError::ArithmeticOverflow { figure: "hands" })?;
     let bb_per_100 = bb_won.bb_per_100(hands, "bb_per_100")?;
 
     Ok(Some(SessionsRow {

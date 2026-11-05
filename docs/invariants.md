@@ -242,9 +242,12 @@ in `docs/stats.md` depends on this policy.
     are rounded half-even once to `Decimal` with scale 2 that is never negative zero (`-0.00`
     normalizes to `0.00`).
   - **Zero denominators** yield `None`, which prints as an empty cell in CSV and `null` in JSON.
+  - **Stored text** (currency, platform) that does not parse is `StorageError::CorruptRow`, before
+    any row exists; a report never substitutes a default.
   - **Stakes:** `None` represents the `ALL` row (`"ALL"` in CSV, `null` in JSON).
-  - **Sessions timestamps:** `start` and `end` format with `TIMESTAMP_FORMAT` (`YYYY-MM-DDTHH:MM:SS`),
-    matching JSON ISO 8601 formatting.
+  - **Sessions timestamps:** `start` and `end` print with `TIMESTAMP_FORMAT`
+    (`%Y-%m-%dT%H:%M:%S%.f`, so `2026-08-21T16:54:10`, with a fraction only when the stored time
+    has one), as they are stored; JSON writes the same `T` form.
 - **Reading.** One read transaction, after the version guard. Every report query, and the
   unmatched-stakes probe, use one selection fragment joining `hands h`, `hand_players hp` and
   `hand_player_stats hps` with aliases `h`, `hp`, and `hps`. Reports read only integer columns,

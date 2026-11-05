@@ -308,7 +308,8 @@ impl BbWon {
 /// returns [`ReportError::Storage`] with [`StorageError::StaleDerivedCache`].
 ///
 /// # Errors
-/// Returns [`ReportError`] on cache version mismatch, SQLite failure, or arithmetic overflow.
+/// Returns [`ReportError`] on cache version mismatch, SQLite failure, a stored text value that
+/// does not parse ([`StorageError::CorruptRow`]), or arithmetic overflow. No row exists then.
 pub fn build_report(
     repo: &SqliteRepository,
     kind: ReportKind,
@@ -486,8 +487,8 @@ mod tests {
         // Case 5: Overflow path returns ArithmeticOverflow
         let mut bb_ov = BbWon::default();
         bb_ov.add(1_000_000_000_000_000_003, 1);
-        bb_ov.add(1_000_000_000_000_009, 1);
-        bb_ov.add(1_000_000_000_000_021, 1);
+        bb_ov.add(1_000_000_000_000_000_009, 1);
+        bb_ov.add(1_000_000_000_000_000_021, 1);
         assert!(matches!(
             bb_ov.bb_won("bb_won"),
             Err(ReportError::ArithmeticOverflow { figure: "bb_won" })

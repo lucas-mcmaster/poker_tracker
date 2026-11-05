@@ -190,7 +190,10 @@ pub(crate) fn build_positions_rows(
                     continue;
                 }
                 let bb_per_100_val = agg.bb_won.bb_per_100(agg.hands, "bb_per_100")?;
-                let vpip_den = agg.hands.saturating_sub(agg.p_walk);
+                let vpip_den = agg
+                    .hands
+                    .checked_sub(agg.p_walk)
+                    .ok_or(ReportError::ArithmeticOverflow { figure: "vpip" })?;
 
                 rows.push(PositionsRow {
                     currency: currency_code,

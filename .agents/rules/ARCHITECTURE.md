@@ -284,7 +284,7 @@ rules, are in `docs/invariants.md` §1 and §2.
   (`CurrencyCode`, `Option<Stakes>`, `PositionLabel`, `Platform`, `NaiveDateTime`, `Decimal`,
   `Option<Decimal>`).
 - `pub fn write_csv(report: &Report, out: &mut impl Write) -> Result<(), ReportError>`: formats a
-  typed report as RFC 4180 CSV.
+  typed report as CSV (text fields quoted per RFC 4180, lines ending in LF). It fails only with `Io`.
 - `pub fn write_report(repo: &SqliteRepository, kind: ReportKind, options: &ReportOptions, out: &mut impl Write) -> Result<ReportOutcome, ReportError>`:
   thin wrapper calling `build_report` followed by `write_csv`.
 - `PositionLabel` is re-exported from `report`.

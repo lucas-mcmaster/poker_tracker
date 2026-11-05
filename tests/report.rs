@@ -1236,3 +1236,167 @@ fn zero_denominator_none_formats_empty_csv_and_null_json() {
         r#"{"currency":"CAD","stat":"vpip","numerator":0,"denominator":0,"value":null}"#
     );
 }
+
+/// Villain posts the small blind and folds; the hero's big blind is a walk (`docs/stats.md` §4).
+fn hero_bb_walk(id: &str) -> CanonicalHand {
+    let p = vec![
+        make_player(1, "Villain", dec!(10), false),
+        make_player(2, "Hero", dec!(10), true),
+    ];
+    let a = vec![
+        make_action(
+            0,
+            Street::Preflop,
+            "Villain",
+            ActionType::PostSmallBlind,
+            dec!(0.05),
+            dec!(0.05),
+            false,
+        ),
+        make_action(
+            1,
+            Street::Preflop,
+            "Hero",
+            ActionType::PostBigBlind,
+            dec!(0.10),
+            dec!(0.10),
+            false,
+        ),
+        make_action(
+            2,
+            Street::Preflop,
+            "Villain",
+            ActionType::Fold,
+            dec!(0),
+            dec!(0.05),
+            false,
+        ),
+    ];
+    let mut h = valid_hand(make_canonical_hand(1, p, a, vec![], vec![]));
+    h.header.site_hand_id = id.to_string();
+    h
+}
+
+/// Spec §6 test 5 through `build_report`: in a walk the hero's VPIP, PFR and RFI denominators are
+/// 0 (`hands - p_walk` = 1 - 1; no PFR or RFI opportunity), and so are `af_pf`'s preflop calls.
+#[test]
+fn zero_denominators_from_build_report_are_none_empty_and_null() {
+    let temp_db = NamedTempFile::new().unwrap();
+    let mut repo = SqliteRepository::open(temp_db.path()).unwrap();
+    let stored = repo.insert_hands_batch(&[hero_bb_walk("W1")]).unwrap();
+    assert!(stored.rejected.is_empty(), "{:?}", stored.rejected);
+    let options = ReportOptions::default();
+
+    let positions = build_report(&repo, ReportKind::Positions, &options).unwrap();
+    let ReportRows::Positions(rows) = &positions.rows else {
+        panic!("expected positions rows");
+    };
+    let [bb] = rows.as_slice() else {
+        panic!("expected one positions row: {rows:?}");
+    };
+    assert_eq!(bb.position, PositionLabel::Bb);
+    assert_eq!((bb.vpip, bb.pfr, bb.rfi), (None, None, None));
+    let mut buf = Vec::new();
+    write_csv(&positions, &mut buf).unwrap();
+    assert_eq!(
+        String::from_utf8(buf).unwrap(),
+        "currency,position,hands,net,bb_per_100,vpip,pfr,rfi\nCAD,BB,1,0.05,50.00,,,\n"
+    );
+    let json = serde_json::to_string(&positions).unwrap();
+    assert!(
+        json.contains(r#""vpip":null,"pfr":null,"rfi":null"#),
+        "{json}"
+    );
+
+    let stats = build_report(&repo, ReportKind::Stats, &options).unwrap();
+    let ReportRows::Stats(rows) = &stats.rows else {
+        panic!("expected stats rows");
+    };
+    let row = |name: &str| rows.iter().find(|r| r.stat == name).unwrap();
+    // A percentage (vpip), a factor (af_pf), and a non-zero denominator for contrast (win: 1/1).
+    for name in ["vpip", "af_pf"] {
+        assert_eq!(
+            (row(name).denominator, row(name).value),
+            (0, None),
+            "{name}"
+        );
+    }
+    assert_eq!(row("win").value, Some(dec!(100.00)));
+    assert_eq!(row("win").value.unwrap().scale(), 2);
+    let mut buf = Vec::new();
+    write_csv(&stats, &mut buf).unwrap();
+    let csv = String::from_utf8(buf).unwrap();
+    for line in ["CAD,vpip,0,0,", "CAD,af_pf,0,0,", "CAD,win,1,1,100.00"] {
+        assert!(csv.lines().any(|l| l == line), "{line} missing from\n{csv}");
+    }
+    let json = serde_json::to_string(&stats).unwrap();
+    for object in [
+        r#"{"currency":"CAD","stat":"vpip","numerator":0,"denominator":0,"value":null}"#,
+        r#"{"currency":"CAD","stat":"af_pf","numerator":0,"denominator":0,"value":null}"#,
+        r#"{"currency":"CAD","stat":"win","numerator":1,"denominator":1,"value":"100.00"}"#,
+    ] {
+        assert!(json.contains(object), "{object} missing from {json}");
+    }
+}
+
+/// Spec M17.2.2: stored text that does not parse is `StorageError::CorruptRow`, never a default.
+/// `C1D` passes the `hands.currency` CHECK (three characters, upper case) but is not a currency
+/// code (three letters), so every report refuses it before writing anything.
+#[test]
+fn an_unparseable_stored_currency_is_corrupt_row_in_every_report() {
+    let temp_db = NamedTempFile::new().unwrap();
+    let mut repo = SqliteRepository::open(temp_db.path()).unwrap();
+    let stored = repo.insert_hands_batch(&[hero_bb_walk("W1")]).unwrap();
+    assert!(stored.rejected.is_empty(), "{:?}", stored.rejected);
+    rusqlite::Connection::open(temp_db.path())
+        .unwrap()
+        .execute("UPDATE hands SET currency = 'C1D'", [])
+        .unwrap();
+
+    for kind in [
+        ReportKind::Results,
+        ReportKind::Positions,
+        ReportKind::Sessions,
+        ReportKind::Stats,
+    ] {
+        let err = build_report(&repo, kind, &ReportOptions::default()).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                ReportError::Storage(StorageError::CorruptRow { table: "hands", detail })
+                    if detail.contains("C1D")
+            ),
+            "{kind:?}: {err:?}"
+        );
+        let mut buf = Vec::new();
+        assert!(write_report(&repo, kind, &ReportOptions::default(), &mut buf).is_err());
+        assert!(buf.is_empty(), "{kind:?}");
+    }
+}
+
+/// `docs/stats.md` §2 as a literal table (the spec's test 6 compares `PositionLabel::of` with
+/// `position_label`, which now delegates to it), and `Display` prints `as_str`.
+#[test]
+fn position_labels_match_the_stats_md_table() {
+    use PositionLabel::{Bb, Btn, Co, Ep, Mp, Sb};
+    // Codes 0 … 9.
+    let six = [Btn, Co, Mp, Ep, Ep, Ep, Ep, Ep, Bb, Sb];
+    let seven = [Btn, Co, Mp, Mp, Mp, Ep, Ep, Ep, Bb, Sb];
+    for max_seats in 2..=10u8 {
+        let expected = if max_seats <= 6 { six } else { seven };
+        for (code, label) in (0u8..).zip(expected) {
+            assert_eq!(
+                PositionLabel::of(Some(code), max_seats),
+                label,
+                "{code} {max_seats}"
+            );
+        }
+        assert_eq!(
+            PositionLabel::of(Some(10), max_seats),
+            PositionLabel::Unknown
+        );
+    }
+    for label in PositionLabel::ALL {
+        assert_eq!(label.to_string(), label.as_str());
+    }
+}
